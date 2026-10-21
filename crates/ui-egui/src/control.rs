@@ -374,6 +374,12 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
                     {
                         return err(e);
                     }
+                    if (u.tab == "MANUFACTURE") != (app.ui.tab == "MANUFACTURE")
+                        && u.tab == "MANUFACTURE"
+                        && let Err(e) = crate::workspace::enter(app, "manufacture")
+                    {
+                        return err(e);
+                    }
                     u.ribbon_context = app.ui.ribbon_context.clone();
                     app.ui = u;
                     app.session.visibility = v;

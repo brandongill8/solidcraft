@@ -83,6 +83,7 @@ mod loft_rails_dialog_tests;
 mod look_at_tests;
 #[cfg(test)]
 mod manage_dialogs_tests;
+pub mod manufacture_job;
 pub mod manufacture_panel;
 mod material_card_review;
 
@@ -377,6 +378,7 @@ pub struct SolveApp {
     pub bom: Option<bom_panel::BomPanel>,
     /// The Machining Simulation window, when open.
     pub manufacture: Option<manufacture_panel::MfgPanel>,
+    pub manufacture_job: Option<manufacture_job::JobWindow>,
     material_card_review: Option<material_card_review::ReviewWindow>,
     /// Context menus, rename box and Properties window.
     pub menu: context_menu::MenuState,
@@ -531,6 +533,7 @@ impl SolveApp {
             design_properties: None,
             bom: None,
             manufacture: None,
+            manufacture_job: None,
             material_card_review: None,
             menu: context_menu::MenuState::default(),
             gesture: mouse_gesture::State::default(),
@@ -930,6 +933,16 @@ impl SolveApp {
         }
         if id == "manufacture.simulate" {
             manufacture_panel::open(self);
+            return;
+        }
+        if let Some(tab) = match id {
+            "manufacture.tool.set" => Some(0),
+            "manufacture.setup.set" => Some(1),
+            "manufacture.operation.set" | "manufacture.toolpath" => Some(2),
+            "manufacture.post" => Some(3),
+            _ => None,
+        } {
+            manufacture_job::open(self, tab);
             return;
         }
         if id == "sketch.finish" {
@@ -1629,6 +1642,7 @@ impl SolveApp {
         design_properties::show(self, ui.ctx());
         bom_panel::show(self, ui.ctx());
         manufacture_panel::show(self, ui.ctx());
+        manufacture_job::show(self, ui.ctx());
         material_card_review::show(self, ui.ctx());
         recovery_ui::show(self, ui.ctx());
         stand_up::show(self, ui.ctx());

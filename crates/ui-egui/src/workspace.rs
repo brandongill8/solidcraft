@@ -253,6 +253,10 @@ pub const SECTIONS: &[Section] = &[
     Section { tab: "SHEET METAL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "RENDER", panel: "SCENE", promoted: 2, ids: &["render.scene"] },
     Section { tab: "RENDER", panel: "IMAGE", promoted: 1, ids: &["render.start"] },
+    Section { tab: "MANUFACTURE", panel: "TOOLS", promoted: 1, ids: &["manufacture.tool.set"] },
+    Section { tab: "MANUFACTURE", panel: "SETUPS", promoted: 1, ids: &["manufacture.setup.set"] },
+    Section { tab: "MANUFACTURE", panel: "OPERATIONS", promoted: 2, ids: &["manufacture.operation.set", "manufacture.toolpath"] },
+    Section { tab: "MANUFACTURE", panel: "OUTPUT", promoted: 2, ids: &["manufacture.post", "manufacture.simulate"] },
 ];
 
 /// Compact source labels for painted big buttons only. Menus, search and tooltips
@@ -280,6 +284,11 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("inspect.section", "Section"),
     ("inspect.zebra", "Zebra"),
     ("joint.as_built", "As-Built"),
+    ("manufacture.operation.set", "Operations"),
+    ("manufacture.post", "G-code"),
+    ("manufacture.setup.set", "Setups"),
+    ("manufacture.tool.set", "Tool Library"),
+    ("manufacture.toolpath", "Check Toolpath"),
     ("material.assign", "Material"),
     ("parameters.change", "Parameters"),
     ("parameters.graph", "Param. Graph"),
@@ -343,6 +352,10 @@ pub const PLACEMENTS: &[(&str, &str, &str, &str)] = &[
     ("MESH", "MODIFY", "INSERT", "FILES"),
     ("RENDER", "SCENE", "RENDER", "SCENE"),
     ("RENDER", "IMAGE", "RENDER", "IMAGE"),
+    ("MANUFACTURE", "TOOLS", "MANUFACTURE", "TOOLS"),
+    ("MANUFACTURE", "SETUPS", "MANUFACTURE", "SETUPS"),
+    ("MANUFACTURE", "OPERATIONS", "MANUFACTURE", "OPERATIONS"),
+    ("MANUFACTURE", "OUTPUT", "MANUFACTURE", "OUTPUT"),
 ];
 
 pub fn panels(tab: &str) -> Vec<&'static str> {
@@ -435,9 +448,35 @@ pub fn sheet_body(app: &crate::SolveApp) -> Option<String> {
     state.sheets.iter().find(|s| s.body == body).map(|s| s.body.clone())
 }
 
+/// Switch workspace: "design", "render" or "manufacture".
+pub fn enter(app: &mut crate::SolveApp, workspace: &str) -> Result<(), String> {
+    match workspace {
+        "render" => {
+            if app.ui.tab == "MANUFACTURE" {
+                app.ui.tab = "MODEL".into();
+            }
+            crate::render_workspace::enter(app, true)
+        }
+        "manufacture" => {
+            if app.session.active_sketch.is_some() || app.tool.is_some() || app.dialog.is_some() || app.file_load.busy() {
+                return Err("finish the current modelling operation before entering Manufacture".into());
+            }
+            if crate::render_workspace::active(app) {
+                crate::render_workspace::enter(app, false)?;
+            }
+            app.ui.tab = "MANUFACTURE".into();
+            Ok(())
+        }
+        _ => crate::render_workspace::enter(app, false),
+    }
+}
+
 pub fn visible_tabs(app: &crate::SolveApp) -> Vec<&'static str> {
     if crate::render_workspace::active(app) {
         return vec!["RENDER"];
+    }
+    if app.ui.tab == "MANUFACTURE" {
+        return vec!["MANUFACTURE"];
     }
     let mut tabs = TABS.to_vec();
     if app.session.active_sketch.is_some() {
@@ -452,7 +491,7 @@ pub fn visible_tabs(app: &crate::SolveApp) -> Vec<&'static str> {
 /// Select contextual tabs on entry (or a different sheet body), allowing the other tabs to
 /// remain usable for the rest of that context. Sketch takes precedence over sheet metal.
 pub fn sync_context(app: &mut crate::SolveApp) {
-    if crate::render_workspace::active(app) {
+    if crate::render_workspace::active(app) || app.ui.tab == "MANUFACTURE" {
         return;
     }
     let context = app.session.active_sketch.map(|id| format!("sketch:{id}")).or_else(|| sheet_body(app).map(|body| format!("sheet:{body}")));

@@ -26,23 +26,23 @@ const MAX_LISTED_MOVES_HARD: usize = 200_000;
 pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("manufacture.job", "Manufacturing Job", job).icon("list").noundo().doc_only()
     .params("No parameters. Returns {tools, setups, operations}: the design's tool library, setups (work frame, stock, work offset, clearance height) and operations. See docs/manufacture.md"),
-CommandSpec::new("manufacture.tool.set", "Set Tool", tool_set).icon("hole").doc_only()
+CommandSpec::new("manufacture.tool.set", "Set Tool", tool_set).icon("hole").doc_only().at("MANUFACTURE", "TOOLS")
     .params("id?: tool number (new when omitted or unused; the controller's T number), name?, kind?: flat_end_mill|ball_end_mill|bull_nose_end_mill|drill, diameter (mm), flutes?: 2, corner_radius?: 0, tip_angle?: 118 (drills). Updates only the fields given. One undo step."),
 CommandSpec::new("manufacture.tool.delete", "Delete Tool", tool_delete).icon("delete").doc_only()
     .params("id: tool number. Refused while an operation uses it (they are listed)."),
-CommandSpec::new("manufacture.setup.set", "Set Setup", setup_set).icon("gear").doc_only()
+CommandSpec::new("manufacture.setup.set", "Set Setup", setup_set).icon("gear").doc_only().at("MANUFACTURE", "SETUPS")
     .params("id?: setup number (new when omitted or unused), name?, plane?: XY|XZ|YZ (the work frame's plane), origin?: [x, y, z] (model space), frame?: {origin, x_dir, y_dir} (a full frame; Z = x_dir × y_dir is the tool axis), work_offset?: 54-59 (G54-G59), stock?: {min: [x, y, z], max: [x, y, z]} in work coordinates, clearance?: 10 (work Z the tool travels at between features). Updates only the fields given."),
 CommandSpec::new("manufacture.setup.delete", "Delete Setup", setup_delete).icon("delete").doc_only()
     .params("id: setup number. Refused while an operation is in it."),
-CommandSpec::new("manufacture.operation.set", "Set Operation", operation_set).icon("extrude").doc_only()
+CommandSpec::new("manufacture.operation.set", "Set Operation", operation_set).icon("extrude").doc_only().at("MANUFACTURE", "OPERATIONS")
     .params("id?: operation number (new when omitted or unused), name?, setup, tool, kind: {type: face, margin?: 0, stepover?: 0.6} | {type: contour, source: {sketch, profiles?: [indices]}, side?: outside|inside|on, direction?: climb|conventional, allowance?: 0, ramp_angle?: 3} | {type: pocket, source, direction?, stepover?: 0.4, allowance?: 0, finish?: false, ramp_angle?: 3} | {type: drill, points: {from: sketch, sketch, profiles?} | {from: points, points: [[x, y]]}, peck?, dwell?: 0}; top (work Z of the surface, mm), bottom (work Z of the deepest cut), retract?: 2 (feed plane above top), stepdown? (default half the tool diameter), spindle_rpm, feed (mm/min), plunge_feed? (half the feed), coolant?: false. `sketch` may be an id or a name. Updates only the fields given. Checked against the tool and setup. See docs/manufacture.md"),
 CommandSpec::new("manufacture.operation.delete", "Delete Operation", operation_delete).icon("delete").doc_only()
     .params("id: operation number."),
-CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).icon("measure").noundo()
+CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).icon("measure").noundo().at("MANUFACTURE", "OPERATIONS")
     .params("operation: number, moves?: false (list the moves; `limit`: at most 5000 by default, 200000 at most; `expanded`: drilling cycles as plain moves, as `manufacture.simulate` numbers them), tolerance?: 0.005 (chord error of curves, mm), rapid_rate?: 10000 (mm/min, for the time estimate). Returns {operation, kind, moves, stats: {rapid_length, feed_length, minutes, min, max}, warnings}. Does not change the design."),
-CommandSpec::new("manufacture.post", "Post Process", post).icon("export").noundo()
+CommandSpec::new("manufacture.post", "Post Process", post).icon("export").noundo().at("MANUFACTURE", "OUTPUT")
     .params("dialect: grbl|fanuc|haas, operations?: [numbers] (all, in order), program_name?, program_number?: 1001 (Fanuc/Haas O number), line_numbers?: false, tolerance?: 0.005, path?: write the program there (an existing file is kept unless overwrite: true), overwrite?: false. Returns {dialect, operations, lines, bytes, warnings} and the program text as `gcode` unless it was written to `path`. Does not change the design."),
-CommandSpec::new("manufacture.simulate", "Simulate Machining", simulate).icon("play").noundo()
+CommandSpec::new("manufacture.simulate", "Simulate Machining", simulate).icon("play").noundo().at("MANUFACTURE", "OUTPUT")
     .params("setup?: number (the first setup), operations?: [numbers] (all in the setup, in order), resolution?: 0.5 (cell size, mm), tolerance? (how deep an overlap counts as a collision, mm; default one cell, at least 0.05), until?: move number to stop after, part?: true (check against the model's bodies; false: stock only), bodies?: [names] (default all), surface?: max cells of the stock surface to return for drawing (0/omitted: none), tolerance_chord?: 0.005. Cuts the setup's stock away along the toolpaths (a height map) and reports gouges into the model, shank hits (tool.flute_length), rapids through stock or the model, and cuts below the stock, with volumes removed and left over. Returns {setup, frame, grid, steps, total_steps, operations: [{operation, first_step}], volumes, counts, collisions, open_cells, tolerance, surface?}. Does not change the design. See docs/manufacture.md"),
 ];
 

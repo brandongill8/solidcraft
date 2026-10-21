@@ -258,7 +258,7 @@ pub(crate) fn workspace_menu(ui: &mut egui::Ui, items: &[Item], key_row: Option<
                     "Render" => ("render", "ui.workspace_render_description", Some("ui.workspace_render_tabs")),
                     "Animation" => ("animation", "ui.workspace_animation_description", None),
                     "Simulation" => ("simulation", "ui.workspace_simulation_description", None),
-                    "Manufacture" => ("manufacture", "ui.workspace_manufacture_description", None),
+                    "Manufacture" => ("manufacture", "ui.workspace_manufacture_description", Some("ui.workspace_manufacture_tabs")),
                     "Drawing" => ("drawing", "ui.workspace_drawing_description", None),
                     _ => continue,
                 };

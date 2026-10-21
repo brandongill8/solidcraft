@@ -367,7 +367,14 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
                     .key(if rendering { "current" } else { "" })
                     .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
             ];
-            for (w, icon) in [("Animation", "ws_animate"), ("Simulation", ""), ("Manufacture", ""), ("Drawing", "ws_drawing")] {
+            let machining = app.ui.tab == "MANUFACTURE";
+            v.push(
+                act("ui.workspace.manufacture", "Manufacture", "")
+                    .with(json!({"workspace":"manufacture"}))
+                    .key(if machining { "current" } else { "" })
+                    .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
+            );
+            for (w, icon) in [("Animation", "ws_animate"), ("Simulation", ""), ("Drawing", "ws_drawing")] {
                 v.push(act("ui.workspace", w, icon).key("coming later").on(false));
             }
             v
@@ -1168,9 +1175,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.shortcutPin" => {
             crate::toolbar_custom::run(app, &item.id, &p)
         }
-        "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" => {
+        "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" | "ui.workspace.manufacture" => {
             if let Some(workspace) = p.get("workspace").and_then(Value::as_str)
-                && let Err(e) = crate::render_workspace::enter(app, workspace == "render")
+                && let Err(e) = crate::workspace::enter(app, workspace)
             {
                 app.set_status(e, true);
             }
