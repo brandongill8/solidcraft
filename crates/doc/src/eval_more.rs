@@ -611,7 +611,7 @@ pub(super) fn sheet_eval(
                 )));
             }
             let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            sh.perforations.push(crate::sheet::SheetPerforation { feature: f.id, diameter: d, pitch, margin, square });
+            sh.perforations.push(crate::sheet::SheetPerforation { feature: f.id, diameter: d, pitch, margin, square, from_right: false });
             Ok(())
         }
         FeatureKind::SheetHem { edges, length, gap, flip, body } => {

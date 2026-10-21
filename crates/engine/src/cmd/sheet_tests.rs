@@ -4878,3 +4878,108 @@ fn a_sheet_made_of_sheet_features_and_flat_cuts_still_exports_its_flat_pattern()
     }
     assert_eq!(flat(&mut s)["cutouts"].as_array().map(Vec::len), Some(2));
 }
+
+/// An L-bracket with a hole off its centre and two flanges, so that its mirror image is the
+/// opposite hand: a 100 x 60 base on XY with a 10 mm hole at (25, 40), a 20 mm flange on the
+/// front edge and a 15 mm one on the right edge.
+fn asymmetric_bracket(s: &mut Session) {
+    run(s, "sheet.manage_rules", json!({"name": "S", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": 0.4, "active": true}));
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "sheet.flange", json!({"type": "base"}));
+    run(s, "sheet.flange", json!({"edges": [[50, 0, 2]], "height": 20, "name": "F1"}));
+    run(s, "sheet.flange", json!({"edges": [[100, 30, 2]], "height": 15, "name": "F2"}));
+    circle_sketch(s, "Hole", json!("XY"), [25.0, 40.0], 10.0);
+    run(s, "solid.extrude", json!({"sketch": "Hole", "through_all": true, "direction": "symmetric", "operation": "cut"}));
+}
+
+/// The points of a flat pattern's loops, `x` scaled by `sx`, sorted, rounded to 1e-6 mm.
+fn flat_points(v: &Value, sx: f64) -> Vec<(i64, i64)> {
+    let mut out: Vec<(i64, i64)> = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|l| l.as_array().cloned().unwrap_or_default())
+        .map(|p| ((p[0].as_f64().unwrap_or(f64::NAN) * sx * 1e6).round() as i64, (p[1].as_f64().unwrap_or(f64::NAN) * 1e6).round() as i64))
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+fn body_volume(s: &mut Session, name: &str) -> f64 {
+    let m = run(s, "inspect.measure", json!({}));
+    m["bodies"].as_array().into_iter().flatten().find(|b| b["name"] == name).and_then(|b| b["volume_mm3"].as_f64()).unwrap_or(f64::NAN)
+}
+
+#[test]
+fn a_mirrored_sheet_copy_is_the_opposite_hand_with_the_mirror_image_flat_pattern() {
+    let mut s = Session::default();
+    asymmetric_bracket(&mut s);
+    let original = run(&mut s, "sheet.flat_pattern", json!({"body": "Body1"}));
+    run(&mut s, "solid.mirror", json!({"bodies": ["Body1"], "plane": "YZ"}));
+    let mirrored = run(&mut s, "sheet.flat_pattern", json!({"body": "Body1 (2)"}));
+    // The same blank, the other way round: K-factor flat length, bends and thickness are kept.
+    assert_eq!(mirrored["flat_size_mm"], original["flat_size_mm"], "{mirrored}");
+    assert_eq!(mirrored["thickness"], original["thickness"]);
+    assert_eq!(flat_points(&mirrored["outline"], 1.0), flat_points(&original["outline"], -1.0));
+    assert_eq!(original["cutouts"].as_array().map(Vec::len), Some(1), "{original}");
+    assert_eq!(flat_points(&mirrored["cutouts"], 1.0), flat_points(&original["cutouts"], -1.0));
+    let bends = |f: &Value| -> Vec<(String, i64, i64)> {
+        let mut b: Vec<_> = f["bends"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|b| {
+                (
+                    b["direction"].to_string(),
+                    (b["allowance"].as_f64().unwrap_or(0.0) * 1e9).round() as i64,
+                    (b["length"].as_f64().unwrap_or(0.0) * 1e9).round() as i64,
+                )
+            })
+            .collect();
+        b.sort();
+        b
+    };
+    assert_eq!(bends(&mirrored), bends(&original));
+    assert_eq!(bends(&mirrored).len(), 2);
+    // The hole is where the mirror put it, on the copy and in its flat pattern.
+    let in_copy = |p: [f64; 3]| {
+        s.model.state().bodies.iter().find(|b| b.name == "Body1 (2)").is_some_and(|b| b.body.contains(solidcraft_geom::Vec3::new(p[0], p[1], p[2])))
+    };
+    assert!(!in_copy([-25.0, 40.0, 1.0]) && in_copy([-35.0, 40.0, 1.0]));
+    let hole = flat_points(&mirrored["cutouts"], 1.0);
+    let cx = hole.iter().map(|p| p.0 as f64).sum::<f64>() / hole.len().max(1) as f64 * 1e-6;
+    assert!((cx + 25.0).abs() < 1e-3, "hole centre x {cx}");
+    // The sheet model is the mirrored body: a flange added to the copy grows it from its own
+    // back edge, and its DXF is that of a sheet.
+    let before = body_volume(&mut s, "Body1 (2)");
+    assert!(rel(before, body_volume(&mut s, "Body1")) < 1e-9);
+    run(&mut s, "sheet.flange", json!({"edges": [[-50, 60, 2]], "height": 10, "body": "Body1 (2)"}));
+    let after = body_volume(&mut s, "Body1 (2)");
+    assert!(after > before + 100.0, "{before} -> {after}");
+    let dxf = run(&mut s, "sheet.export_dxf", json!({"body": "Body1 (2)"}));
+    assert_eq!(dxf["bends"], 3);
+}
+
+#[test]
+fn mirroring_or_copying_a_sheet_body_leaves_the_original_sheet_as_it_was() {
+    let mut s = Session::default();
+    asymmetric_bracket(&mut s);
+    let original = run(&mut s, "sheet.flat_pattern", json!({"body": "Body1"}));
+    let volume = body_volume(&mut s, "Body1");
+    run(&mut s, "solid.mirror", json!({"bodies": ["Body1"], "plane": "YZ"}));
+    run(&mut s, "solid.move", json!({"bodies": ["Body1"], "translate": [0, 200, 0], "copy": true}));
+    run(&mut s, "solid.pattern.rectangular", json!({"bodies": ["Body1"], "dir1": [0, 0, 1], "count1": 2, "spacing1": 100}));
+    assert_eq!(run(&mut s, "sheet.flat_pattern", json!({"body": "Body1"})), original);
+    assert!(rel(body_volume(&mut s, "Body1"), volume) < 1e-9);
+    // A moved or patterned copy is the same hand: the same flat pattern, as a sheet of its own.
+    let names: Vec<String> = s.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+    assert_eq!(names.len(), 4, "{names:?}");
+    for name in names.iter().filter(|n| *n != "Body1" && *n != "Body1 (2)") {
+        let mut copy = run(&mut s, "sheet.flat_pattern", json!({"body": name}));
+        copy["body"] = original["body"].clone();
+        assert_eq!(flat_points(&copy["outline"], 1.0), flat_points(&original["outline"], 1.0), "{name}");
+        assert_eq!(copy["bends"], original["bends"], "{name}");
+    }
+}

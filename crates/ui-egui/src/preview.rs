@@ -268,9 +268,9 @@ fn motion_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option
     Some(h.finish())
 }
 
-/// Tool previews already stream in `poll`. New-body extrusions and face offsets instead
-/// build their full result; allow successful intermediate distances only within the same
-/// setup. Preserve selections, feature identity, extent mode, revision and colours. The
+/// Tool previews already stream in `poll`. New-body extrusions, face offsets, fillets and
+/// chamfers instead build their full result; allow successful intermediate distances (a
+/// fillet's radii, a chamfer's distances and angle) only within the same setup. Preserve selections, feature identity, extent mode, revision and colours. The
 /// exact job key still ensures the latest distance is computed and errors never go stale.
 fn stream_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option<u64> {
     if let Some(key) = motion_key(cmds, revision, colors) {
@@ -290,6 +290,10 @@ fn stream_key(cmds: &[(String, Value)], revision: u64, colors: Colors) -> Option
         let fields: &[&str] = match command.as_str() {
             "solid.extrude" => &["distance", "distance2", "to_offset"],
             "solid.offset_face" => &["distance"],
+            // A radius dragged or typed: each result shows while the next computes, rather than
+            // the preview holding still until the input stops changing.
+            "solid.fillet" => &["radius", "radius2", "mid"],
+            "solid.chamfer" => &["distance", "distance2", "angle"],
             _ => return None,
         };
         let params = params.as_object_mut()?;

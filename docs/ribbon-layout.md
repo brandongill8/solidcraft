@@ -14,6 +14,7 @@ Always shown, in order: MODEL, SURFACE, ASSEMBLE, INSERT, INSPECT, MANAGE, VIEW,
 | MODEL | ARRANGE | **`solid.move`**, **`solid.mirror`**, **`solid.pattern.rectangular`**, `solid.align`, `solid.pattern.circular`, `solid.pattern.path` |
 | MODEL | CONFIGURE | **`parameters.change`**, **`config.table`**, `config.configure` |
 | MODEL | CONSTRUCT | **`construct.plane.offset`**, `construct.plane.at_angle`, `construct.axis.through_cylinder`, `construct.axis.normal_to_face`, `construct.axis.two_planes`, `construct.axis.two_points`, `construct.axis.edge`, `construct.point.vertex`, `construct.point.two_edges`, `construct.point.three_planes`, `construct.point.center`, `construct.point.edge_plane`, `construct.point.along_path`, `construct.plane.midplane`, `construct.plane.two_edges`, `construct.plane.three_points`, `construct.plane.tangent`, `construct.plane.along_path`, `construct.plane.perpendicular` |
+| SURFACE | SKETCH | **`sketch.create`** |
 | SURFACE | CREATE | **`surface.extrude`**, **`surface.revolve`**, **`surface.sweep`**, **`surface.loft`**, `surface.boundary`, `surface.patch`, `surface.offset`, `surface.ruled`, `surface.blend` |
 | SURFACE | EDIT | **`surface.trim`**, **`surface.untrim`**, **`surface.extend`**, **`surface.stitch`**, `surface.unstitch`, `surface.reverse_normal`, `surface.fair`, `surface.fillet`, `surface.match` |
 | SURFACE | CONVERT | **`surface.thicken`**, **`mesh.convert`** |
@@ -45,6 +46,7 @@ Always shown, in order: MODEL, SURFACE, ASSEMBLE, INSERT, INSPECT, MANAGE, VIEW,
 | SKETCH | CONSTRAIN | **`sketch.dimension`**, **`sketch.constraint.horizontal_vertical`**, **`sketch.constraint.coincident`**, **`sketch.constraint.tangent`**, **`sketch.constraint.equal`**, **`sketch.constraint.parallel`**, **`sketch.constraint.perpendicular`**, `sketch.construction`, `sketch.constrainer`, `sketch.constraint.fix`, `sketch.constraint.midpoint`, `sketch.constraint.concentric`, `sketch.constraint.collinear`, `sketch.constraint.symmetry`, `sketch.constraint.curvature`, `sketch.constraint.polygon`, `sketch.auto_constrain`, `sketch.auto_constrain_from_datum` |
 | SKETCH | REFERENCE | **`sketch.project`**, `sketch.intersect`, `sketch.include_3d`, `sketch.project_to_surface`, `sketch.intersection_curve`, `sketch.spun_profile`, `sketch.isoparametric_curve`, `sketch.fit_curves_to_section`, `sketch.insert_dxf`, `sketch.insert_svg`, `canvas.insert` |
 | SKETCH | FINISH SKETCH | **`sketch.finish`**, `sketch.finish_auto_constrain` |
+| SHEET METAL | SKETCH | **`sketch.create`** |
 | SHEET METAL | CREATE | **`sheet.flange`**, **`sheet.hem`**, **`sheet.fold`**, **`sheet.perforate`**, `sheet.convert` |
 | SHEET METAL | FLAT | **`sheet.unfold`**, **`sheet.refold`**, **`sheet.flat_pattern`** |
 | SHEET METAL | OUTPUT | **`sheet.export_dxf`**, **`sheet.export_bend_table`** |
@@ -66,6 +68,7 @@ Explicit command-id lists override the default placement mapping. Shared command
 | RENDER / IMAGE | RENDER / IMAGE | `render.start` |
 | RENDER / SCENE | RENDER / SCENE | `render.scene` |
 | SHEET METAL / CREATE | MODEL / MODIFY | `sheet.convert` |
+| SHEET METAL / CREATE | SHEET METAL / SKETCH | `sketch.create` |
 | SHEET METAL / CREATE | SHEET METAL / CREATE | `sheet.flange`, `sheet.perforate`, `sheet.hem`, `sheet.fold` |
 | SHEET METAL / CREATE | SHEET METAL / FLAT | `sheet.flat_pattern` |
 | SHEET METAL / MODIFY | MANAGE / RULES | `sheet.manage_rules` |

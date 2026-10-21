@@ -463,6 +463,10 @@ preference_settings! {
     ai_features: bool = true, PAGE_AI;
     /// The Assistant button in the application bar (the shortcut and View menu entry stay).
     ai_toolbar_button: bool = true, PAGE_AI;
+    /// An agent's slow commands over the control channel (MCP) compute off the window thread,
+    /// so the window stays live while they run (#1989, [`crate::control_job`]). Off: they run on
+    /// the window thread, and the window waits for each, as before (the default).
+    agent_off_thread: bool = false, PAGE_AI;
     /// Agents the user added (the installed ones are found by themselves). API keys are never
     /// here: they live in the system keychain.
     agents: Vec<crate::agent_chat::agents::AgentConfig> = Vec::new();

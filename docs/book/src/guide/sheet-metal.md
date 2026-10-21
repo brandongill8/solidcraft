@@ -16,6 +16,14 @@ and selected when the active body is a sheet), and builds parts from a sheet of 
 Bends follow the rule's K-factor, so flat lengths match what a press brake will make. Tests
 check flat lengths against hand-computed bend allowances.
 
+A copy of a sheet metal body is sheet metal too. **Mirror** (`solid.mirror` with `bodies`)
+makes the opposite hand: its own flat pattern, DXF and bend table, the mirror image of the
+original's flat, with the same thickness side, bends and flat lengths, and holes where the
+mirror puts them. A copy from **Move** (`copy: true`) or a body pattern keeps the original's
+flat pattern. Every copy takes further sheet metal features of its own. Mirroring with
+`combine` joins the two halves into one solid, which has no single sheet model yet; mirroring
+or patterning flange features themselves is not supported yet.
+
 An edge flange takes its setback off its own edge only. Where that edge ends at an inside
 corner of the base (the base runs on past it, like the leg of an L), the rest of the base
 stays, and the rule's **bend relief** (`relief_width` and `relief_depth`; Relief Width and

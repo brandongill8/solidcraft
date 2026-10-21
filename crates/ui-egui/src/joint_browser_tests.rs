@@ -274,6 +274,7 @@ mod delete {
         assert_eq!(h.app.tree.picked_joints, [hinge]);
         crate::delete::delete_selection(&mut h.app);
         assert_eq!(h.app.session.doc.assembly.joints.len(), 2, "a dialog must not delete a joint behind it");
+        assert!(h.app.status.as_ref().is_some_and(|s| s.2 && s.0.contains("dialog")), "the refusal says why");
         h.step(&json!({"key": "Escape"})).unwrap();
         let hinge = joint(&h, "Hinge");
         h.app.tree.picked_joints.clear();
@@ -285,6 +286,36 @@ mod delete {
         crate::delete::delete_selection(&mut h.app);
         assert_eq!(h.app.session.doc.assembly.joints.len(), 2, "Delete must not race the pending history command");
         assert_eq!(features(&h), before);
+    }
+
+    #[test]
+    fn delete_while_editing_that_joint_closes_edit_joint_and_deletes_it() {
+        let mut h = assembly();
+        let before = features(&h);
+        let hinge = joint(&h, "Hinge");
+        h.step(&json!({"click": {"handle": "row:Hinge"}, "double": true})).unwrap();
+        h.frames(3);
+        let editing = |h: &Harness| match h.app.dialog.as_ref().map(|d| &d.kind) {
+            Some(crate::dialogs::Kind::Assembly(crate::dialogs_assembly::Asm::Joint(f))) => f.editing,
+            _ => None,
+        };
+        assert_eq!(editing(&h), Some(hinge), "the double click opens Edit Joint");
+        h.step(&json!({"key": "Delete"})).unwrap();
+        h.frames(3);
+        assert!(h.app.dialog.is_none(), "Delete closes the Edit Joint it deletes the joint of");
+        assert!(h.app.session.doc.assembly.joints.iter().all(|j| j.id != hinge));
+        assert_eq!(h.app.session.doc.assembly.joints.len(), 1);
+        assert_eq!(features(&h), before);
+        h.app.run("edit.undo", json!({})).unwrap();
+        assert_eq!(h.app.session.doc.assembly.joints.len(), 2);
+        assert_eq!(features(&h), before);
+        // The Browser menu's Delete on the same joint goes the same way.
+        h.app.dialog = crate::dialogs_assembly::edit_joint(&h.app, hinge);
+        let items = crate::context_menu::items(&h.app, &crate::context_menu::Target::Joint { id: hinge });
+        let item = items.iter().find(|i| i.label == "Delete").unwrap().clone();
+        crate::context_menu::run_item(&mut h.app, &item, egui::pos2(0., 0.));
+        assert!(h.app.dialog.is_none());
+        assert_eq!(h.app.session.doc.assembly.joints.len(), 1);
     }
 
     #[test]

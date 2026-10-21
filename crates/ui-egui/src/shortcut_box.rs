@@ -136,6 +136,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     let q = q.trim().to_lowercase();
     let mut v: Vec<(u32, Row)> = command_specs()
         .into_iter()
+        .filter(|c| !crate::workspace::AGENT_ONLY.contains(&c.id))
         .filter_map(|c| {
             let (home_tab, home_panel) = crate::workspace::destination(c).unwrap_or(("", ""));
             let (label, tab, panel) = (crate::i18n::tr_label(c.label), crate::i18n::tr_label(home_tab), crate::i18n::tr_label(home_panel));
@@ -656,6 +657,15 @@ mod tests {
         let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         other.sbox.load(&app.sbox.prefs());
         assert_eq!((other.sbox.pinned.clone(), other.sbox.recent.len()), (vec!["solid.extrude".to_string()], 2));
+    }
+
+    #[test]
+    fn solve_sketch_is_not_offered_but_the_command_remains() {
+        let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        for q in ["solve", "sketch.solve", ""] {
+            assert!(!search(&app, q).iter().any(|x| x.0 == "sketch.solve"), "{q:?}");
+        }
+        assert!(solidcraft_engine::find_command("sketch.solve").is_some(), "agents and MCP keep it");
     }
 
     /// The box shows each command's label and place in the current language, and finds a name

@@ -541,6 +541,10 @@ pub struct SheetPerforation {
     pub pitch: f64,
     pub margin: f64,
     pub square: bool,
+    /// The grid runs from the flat's right edge instead of its left: the field of a mirrored
+    /// copy, whose holes are the mirror image of its source's.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub from_right: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1992,8 +1996,11 @@ impl SheetBody {
             if y > hi.y - clear + 1e-9 {
                 break;
             }
-            let mut x = lo.x + clear + if !p.square && row % 2 == 1 { p.pitch / 2.0 } else { 0.0 };
-            while x <= hi.x - clear + 1e-9 {
+            let shift = if !p.square && row % 2 == 1 { p.pitch / 2.0 } else { 0.0 };
+            // Steps across the row from its first hole; a mirrored field counts from the right.
+            let mut step = 0.0;
+            while lo.x + clear + shift + step <= hi.x - clear + 1e-9 {
+                let x = if p.from_right { hi.x - clear - shift - step } else { lo.x + clear + shift + step };
                 let c = Vec2::new(x, y);
                 let (i, j) = idx(x, y);
                 let near = grid.get(j * nx + i).map(Vec::as_slice).unwrap_or(&[]);
@@ -2003,7 +2010,7 @@ impl SheetBody {
                 {
                     out.push(c);
                 }
-                x += p.pitch;
+                step += p.pitch;
             }
             row += 1;
         }
@@ -4352,6 +4359,101 @@ impl Letters {
     pub fn is_letter(&self, lp: &Loop2) -> bool {
         let Some(p) = lp.segs.first().map(Seg2::start) else { return false };
         self.regions.iter().any(|(b, curves)| b.contains(p) && loop_lies_on(lp, curves))
+    }
+}
+
+/// A flat point mirrored across the flat frame's y axis (x → −x).
+fn flip_x(p: Vec2) -> Vec2 {
+    Vec2::new(-p.x, p.y)
+}
+
+/// A loop mirrored across the flat frame's y axis, exactly (arcs stay arcs, free-form curves
+/// follow their control points), and run backwards so it keeps its sense: an outer loop stays
+/// counter-clockwise, a hole clockwise.
+fn flip_x_loop(l: &Loop2) -> Loop2 {
+    let segs = l
+        .segs
+        .iter()
+        .map(|s| match *s {
+            Seg2::Arc { center, radius, start, sweep } => {
+                Seg2::Arc { center: flip_x(center), radius, start: std::f64::consts::PI - start, sweep: -sweep }
+            }
+            other => map_controls(&other, flip_x),
+        })
+        .collect();
+    Loop2 { segs }.reversed()
+}
+
+fn flip_x_region(r: &Region2) -> Region2 {
+    Region2 { outer: flip_x_loop(&r.outer), holes: r.holes.iter().map(flip_x_loop).collect() }
+}
+
+impl SheetBody {
+    /// The sheet model of a copy of this body moved by `m` and named `body`: a rigid motion
+    /// moves its frame; a mirror moves its frame too and mirrors everything in the flat, so the
+    /// copy is the opposite hand, with the same thickness side, bends, K-factor and flat
+    /// length. `None` when `m` is not a rigid motion or a mirror (a scaled copy is no sheet).
+    pub fn copied(&self, body: &str, m: &Mat) -> Option<SheetBody> {
+        let axis = |i: usize| m.get(i).map(|c| Vec3::new(c[0], c[1], c[2]));
+        let (x, y, z) = (axis(0)?, axis(1)?, axis(2)?);
+        let unit = |v: Vec3| (v.dot(v) - 1.0).abs() < 1e-6;
+        let isometry = m.iter().flatten().all(|v| v.is_finite())
+            && unit(x)
+            && unit(y)
+            && unit(z)
+            && x.dot(y).abs() < 1e-6
+            && x.dot(z).abs() < 1e-6
+            && y.dot(z).abs() < 1e-6;
+        if !isometry {
+            return None;
+        }
+        let (origin, fx, fy) = (apply_point(m, self.frame.origin), apply_vector(m, self.frame.x), apply_vector(m, self.frame.y));
+        let mut out = self.clone();
+        out.body = body.to_string();
+        if x.cross(y).dot(z) > 0.0 {
+            out.frame = Plane::new(origin, fx, fy)?;
+        } else {
+            // The mirror of flat point (u, v, w) is the point (−u, v, w) of the frame with its x
+            // axis turned round: that frame's normal is the mirrored normal, so the material
+            // stays on the same side of the mirrored base face.
+            out.frame = Plane::new(origin, fx * -1.0, fy)?;
+            out.flip_flat();
+        }
+        Some(out)
+    }
+
+    /// Everything in flat coordinates mirrored across the flat's y axis (x → −x).
+    fn flip_flat(&mut self) {
+        self.base = flip_x_region(&self.base);
+        for f in &mut self.flanges {
+            // The bend line runs the other way, from its far end, so the flange still lies on
+            // the same side of it (`n` turned as `d` is): its ends swap.
+            f.p = flip_x(f.p + f.d * f.len);
+            f.d = Vec2::new(f.d.x, -f.d.y);
+            f.n = flip_x(f.n);
+            f.ext = (f.ext.1, f.ext.0);
+            f.slope = (f.slope.1, f.slope.0);
+            f.tear = (f.tear.1, f.tear.0);
+            if let Some(shape) = &mut f.shape {
+                *shape = shape.iter().rev().map(|p| flip_x(*p)).collect();
+            }
+            if let Some(exact) = &mut f.exact {
+                *exact = flip_x_loop(exact);
+            }
+        }
+        for r in self.holes.iter_mut().chain(self.labels.iter_mut()).chain(self.pockets.iter_mut().map(|p| &mut p.region)) {
+            *r = flip_x_region(r);
+        }
+        for b in &mut self.bores {
+            b.base.x = -b.base.x;
+            b.axis.x = -b.axis.x;
+        }
+        for p in &mut self.perforations {
+            p.from_right = !p.from_right;
+        }
+        for (_, a, b) in &mut self.base_curves {
+            (*a, *b) = (flip_x(*b), flip_x(*a));
+        }
     }
 }
 

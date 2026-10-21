@@ -1103,7 +1103,7 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             app.tree.hidden_section = None;
             drop(app.run("inspect.section", json!({"clear": true})));
         }
-        "ui.editSection" => app.start("inspect.section"),
+        "ui.editSection" => crate::dialogs::edit_section(app),
         "ui.sectionVisible" => crate::browser::set_section_shown(app, p.get("visible").and_then(Value::as_bool).unwrap_or(true)),
         "ui.fit" => app.animate_view("fit"),
         "ui.home" => app.animate_view("home"),

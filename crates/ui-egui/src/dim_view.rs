@@ -172,14 +172,36 @@ pub fn pin(app: &SolveApp, at: Vec2) {
     EDIT.with(|edit| {
         let mut edit = edit.borrow_mut();
         let Some(e) = edit.as_mut() else { return };
-        let Some(live) = e.live.take() else { return };
-        if let Some(draft) = e.draft.as_mut() {
-            draft.at = Some(at);
-            reevaluate(app, draft, &e.expr);
-        }
+        let Some(live) = e.live else { return };
+        move_text(app, e, at);
+        e.live = None;
         // An untouched value stays selected, so typing still replaces it.
         e.fresh = if live.typed { FRESH - 1 } else { FRESH };
     });
+}
+
+/// Move a draft's text to `at`. Where the text goes can change what the dimension measures
+/// (two points or a slanted line: across from them the distance between them, above or below
+/// the horizontal one, beside them the vertical one), so a value nothing was typed into yet
+/// becomes what the new dimension measures; carrying the old one over would preview, and on
+/// Enter apply, the aligned length as a horizontal or vertical span, moving the picked points.
+fn move_text(app: &SolveApp, e: &mut Edit, at: Vec2) {
+    let typed = e.live.is_none_or(|l| l.typed);
+    let Some(draft) = e.draft.as_mut() else { return };
+    if !typed
+        && let Ok((param, expr, redone)) = dimension_draft(app, draft.entities.clone(), Some(at))
+        && !redone.driven
+    {
+        if expr != e.expr {
+            // Keep the new value selected, so typing still replaces it.
+            e.fresh = FRESH;
+        }
+        (e.param, e.expr, *draft) = (param, expr, redone);
+        return;
+    }
+    draft.at = Some(at);
+    let expr = e.expr.clone();
+    reevaluate(app, draft, &expr);
 }
 
 fn reevaluate(app: &SolveApp, draft: &mut DimensionDraft, expr: &str) {
@@ -435,33 +457,28 @@ pub fn show(app: &mut SolveApp, ui: &egui::Ui, painter: &egui::Painter, proj: &P
         if edit.as_ref().and_then(|e| e.draft.as_ref()).is_some_and(|d| !d.valid(app)) {
             *edit = None;
         }
-        if let Some(e) = edit.as_mut()
-            && let Some(draft) = e.draft.as_mut()
-        {
-            let mut moved = false;
-            if let Some(live) = e.live.as_mut() {
-                // The text follows the pointer once it leaves the pick.
-                let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| proj.rect.contains(*p));
-                if !live.moved && pointer.is_some_and(|p| live.origin.is_none_or(|o| o.distance(p) > 4.0)) {
-                    live.moved = true;
-                }
-                let hover = app.tool.as_ref().and_then(|t| t.hover.as_ref()).map(|h| h.0);
-                if live.moved
-                    && let Some(at) = hover
-                    && draft.at != Some(at)
-                {
-                    draft.at = Some(at);
-                    moved = true;
-                }
+        let e = edit.as_mut()?;
+        let current = e.draft.as_ref()?.at;
+        if let Some(live) = e.live.as_mut() {
+            // The text follows the pointer once it leaves the pick.
+            let pointer = ui.input(|i| i.pointer.hover_pos()).filter(|p| proj.rect.contains(*p));
+            if !live.moved && pointer.is_some_and(|p| live.origin.is_none_or(|o| o.distance(p) > 4.0)) {
+                live.moved = true;
             }
-            if moved || e.expr != draft.checked_expr {
-                let expr = e.expr.clone();
-                reevaluate(app, draft, &expr);
+            let hover = app.tool.as_ref().and_then(|t| t.hover.as_ref()).map(|h| h.0);
+            if live.moved
+                && let Some(at) = hover
+                && current != Some(at)
+            {
+                move_text(app, e, at);
             }
-            Some((e.param.clone(), draft.clone()))
-        } else {
-            None
         }
+        let draft = e.draft.as_mut()?;
+        if e.expr != draft.checked_expr {
+            let expr = e.expr.clone();
+            reevaluate(app, draft, &expr);
+        }
+        Some((e.param.clone(), draft.clone()))
     });
     let placing = !editing();
     let draft = editor_draft.or_else(|| placing.then(|| placement_preview(app)).flatten());
@@ -786,6 +803,19 @@ fn clear_picks(app: &mut SolveApp) {
 /// Is the inline editor open (it has the keyboard)?
 pub fn editing() -> bool {
     EDIT.with(|e| e.borrow().is_some())
+}
+
+/// The open draft: its expression, the dimension it adds and the sketch it previews (tests).
+#[cfg(test)]
+pub fn draft_preview() -> Option<(String, solidcraft_engine::sketch::Constraint, solidcraft_engine::sketch::Sketch)> {
+    EDIT.with(|edit| {
+        let edit = edit.borrow();
+        let e = edit.as_ref()?;
+        let draft = e.draft.as_ref()?;
+        let sk = draft.preview.sketch(draft.sketch)?.sketch.clone();
+        let c = sk.constraints.iter().find(|c| c.param.as_deref() == Some(e.param.as_str()))?.clone();
+        Some((e.expr.clone(), c, sk))
+    })
 }
 
 /// Dimensions drawn last frame: (id, text centre on screen), for tests and the control channel.

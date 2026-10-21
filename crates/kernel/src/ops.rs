@@ -2126,6 +2126,15 @@ fn transform_matrix_keeping(body: &Body, m: [[f64; 4]; 4], phased: bool) -> Resu
     if m.iter().flatten().any(|x| !x.is_finite()) {
         return Err(KernelError::Invalid("non-finite transform".into()));
     }
+    // A perspective row or a flattening (from a design file or a command's parameters) leaves
+    // no solid: refused rather than built into faces that mesh to nonsense.
+    let scale = (0..3).map(|c| Vec3::new(m[c][0], m[c][1], m[c][2]).len()).fold(0.0, f64::max);
+    if m[0][3].abs() > 1e-12 || m[1][3].abs() > 1e-12 || m[2][3].abs() > 1e-12 || (m[3][3] - 1.0).abs() > 1e-12 {
+        return Err(KernelError::Invalid("the transform is not affine: its last row must be 0, 0, 0, 1".into()));
+    }
+    if det3(&m).abs() <= 1e-12 * scale.powi(3) {
+        return Err(KernelError::Invalid("the transform flattens the body: its linear part is singular".into()));
+    }
     if let Some(placed) = body.mesh_transformed(&m) {
         let history = crate::history::History::identity(&placed);
         return placed.with_history(history, &[body]);

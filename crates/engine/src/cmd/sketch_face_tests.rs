@@ -723,3 +723,17 @@ fn a_custom_plane_origin_that_is_not_numbers_is_refused_not_zeroed() {
     assert_eq!(origin_of(&mut s, json!({"origin": [20, 0, 0], "x_dir": [0, 1, 0], "y_dir": [0, 0, 1]})), json!([20.0, 0.0, 0.0]));
     assert_eq!(origin_of(&mut s, json!({"x_dir": [0, 1, 0], "y_dir": [0, 0, 1]})), json!([0.0, 0.0, 0.0]));
 }
+/// A sketch on a body's face projects that face's edges from the body's display mesh. The body
+/// it projects from is the model's own, not a copy that meshes it again: on a body whose curved
+/// edges are slow to mesh, the copy's mesh was thrown away and the next feature meshed the body
+/// a second time, which made a sketch on a face as slow as a cut.
+#[test]
+fn a_sketch_on_a_face_meshes_its_body_once() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Base","name":"BaseFeature"}));
+    assert!(s.model.state().body("Base").unwrap().cached_mesh().is_none());
+    let pick = top_pick(&s, "Base");
+    run(&mut s, "sketch.create", json!({"name":"Attached","plane":pick}));
+    run(&mut s, "sketch.finish", json!({}));
+    assert!(s.model.state().body("Base").unwrap().cached_mesh().is_some(), "the sketch's projection meshed a copy of the body");
+}

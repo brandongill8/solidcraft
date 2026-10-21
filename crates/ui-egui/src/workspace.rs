@@ -65,6 +65,10 @@ pub struct Section {
 /// canonical home.
 const CONFIGURE: &[&str] = &["parameters.change", "config.table", "config.configure"];
 
+/// Commands that stay for agents, MCP and scripts but are not offered to people: the sketch solves
+/// itself after every edit, so a Solve button (and the search hit for it) only confuses.
+pub const AGENT_ONLY: &[&str] = &["sketch.solve"];
+
 pub const SECTIONS: &[Section] = &[
     Section {
         tab: "MODEL",
@@ -87,6 +91,8 @@ pub const SECTIONS: &[Section] = &[
     },
     Section { tab: "MODEL", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "MODEL", panel: "CONSTRUCT", promoted: 1, ids: &["construct.plane.offset"] },
+    // Sketches drive surfaces too: New Sketch leads the tab, as on MODEL and SHEET METAL.
+    Section { tab: "SURFACE", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section { tab: "SURFACE", panel: "CREATE", promoted: 4, ids: &["surface.extrude", "surface.revolve", "surface.sweep", "surface.loft"] },
     Section { tab: "SURFACE", panel: "EDIT", promoted: 4, ids: &["surface.trim", "surface.untrim", "surface.extend", "surface.stitch"] },
     Section { tab: "SURFACE", panel: "CONVERT", promoted: 2, ids: &["surface.thicken", "mesh.convert"] },
@@ -241,6 +247,8 @@ pub const SECTIONS: &[Section] = &[
     // Sketch dimensions are driven by parameters, so they are one click away while sketching.
     Section { tab: "SKETCH", panel: "CONFIGURE", promoted: 2, ids: CONFIGURE },
     Section { tab: "SKETCH", panel: "FINISH SKETCH", promoted: 1, ids: &["sketch.finish"] },
+    // New Sketch leads the tab, as on MODEL: a sheet part starts from a sketch (#3250).
+    Section { tab: "SHEET METAL", panel: "SKETCH", promoted: 1, ids: &["sketch.create"] },
     Section {
         tab: "SHEET METAL",
         panel: "CREATE",
@@ -627,6 +635,8 @@ mod tests {
             ("INSERT", "FILES", "component.insert_design"),
             ("ASSEMBLE", "COMPONENTS", "component.insert_design"),
             ("SHEET METAL", "CREATE", "sheet.convert"),
+            ("SHEET METAL", "SKETCH", "sketch.create"),
+            ("SURFACE", "SKETCH", "sketch.create"),
             ("SKETCH", "REFERENCE", "canvas.insert"),
         ] {
             assert!(layout(tab, panel, &specs).unwrap().0.iter().any(|c| c.id == id));
@@ -843,5 +853,118 @@ mod tests {
             h.frames(1);
         }
         assert_eq!(h.app.session.world_state().bodies.len(), 2, "the STEP file's body is inserted");
+    }
+
+    /// Every way into a sketch (New Sketch on the ribbon then a plane, a double-click in the
+    /// timeline or the browser, Edit Sketch in the browser's menu) opens the SKETCH tab and looks
+    /// at the sketch; Finish Sketch (palette or ribbon) lands on MODEL with the earlier view back
+    /// and the sketch still listed, as before the ribbon redesign.
+    #[test]
+    fn entering_and_finishing_a_sketch_keeps_the_tab_view_and_history() {
+        let iso = json!({"camera": {"yaw_deg": -45, "pitch_deg": 35}});
+        let top = json!({"camera": {"yaw_deg": 0, "pitch_deg": 90}});
+        let expect = |h: &mut crate::scenario::Harness, e: &serde_json::Value, what: &str| {
+            h.frames(3);
+            crate::scenario::check(h, e).unwrap_or_else(|err| panic!("{what}: {err}"));
+        };
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.view", json!({"view": "iso"}));
+        h.frames(3);
+        h.step(&json!({"click": {"handle": "button:sketch.create"}})).unwrap();
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
+        expect(&mut h, &top, "New Sketch on XY");
+        assert_eq!(h.app.ui.tab, "SKETCH");
+        h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]})).unwrap();
+        h.step(&json!({"click": {"handle": "sketch_palette:finish"}})).unwrap();
+        expect(&mut h, &json!({"sketching": false, "errors": 0}), "Finish");
+        expect(&mut h, &iso, "Finish puts the view back");
+        assert_eq!(h.app.ui.tab, "MODEL");
+        assert!(crate::scenario::handle_at("timeline:Sketch1").is_some() && crate::scenario::handle_at("row:Sketch1").is_some());
+
+        let entries = [
+            ("timeline double-click", vec![json!({"click": {"handle": "timeline:Sketch1"}, "double": true})]),
+            ("browser double-click", vec![json!({"click": {"handle": "row:Sketch1"}, "double": true})]),
+            (
+                "browser Edit Sketch",
+                vec![json!({"click": {"handle": "row:Sketch1"}, "button": "right"}), json!({"click": {"handle": "menu:ui.editSketch"}})],
+            ),
+        ];
+        for (how, steps) in entries {
+            for s in steps {
+                h.frames(3);
+                h.step(&s).unwrap_or_else(|e| panic!("{how}: {e}"));
+            }
+            expect(&mut h, &json!({"sketching": true}), how);
+            expect(&mut h, &top, how);
+            assert_eq!(h.app.ui.tab, "SKETCH", "{how}");
+            h.step(&json!({"click": {"handle": "button:sketch.finish"}})).unwrap();
+            expect(&mut h, &json!({"sketching": false}), how);
+            expect(&mut h, &iso, how);
+            assert_eq!(h.app.ui.tab, "MODEL", "{how}");
+        }
+    }
+
+    /// Escape and Enter, pressed one at a time, never leave a sketch (#1804); Undo right after
+    /// Finish reopens it, and a second Undo removes it and leaves the SKETCH tab.
+    #[test]
+    fn keys_keep_a_sketch_open_and_undo_after_finish_reopens_it() {
+        let mut h = crate::scenario::Harness::new();
+        h.frames(3);
+        h.step(&json!({"start": "sketch.create"})).unwrap();
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]})).unwrap();
+        for key in [json!({"key": "Escape"}), json!({"key": "Escape"}), json!({"key": "Enter"}), json!({"key": "Enter", "cmd": true})] {
+            h.step(&key).unwrap();
+            // Well apart, so two presses are never a quick double press.
+            h.frames(60);
+            assert!(h.app.session.active_sketch.is_some(), "{key}");
+            assert_eq!(h.app.ui.tab, "SKETCH", "{key}");
+        }
+        h.step(&json!({"click": {"handle": "sketch_palette:finish"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"key": "Z", "cmd": true})).unwrap();
+        h.frames(2);
+        assert!(h.app.session.active_sketch.is_some(), "Undo after Finish reopens the sketch");
+        assert_eq!(h.app.ui.tab, "SKETCH");
+        h.step(&json!({"key": "Z", "cmd": true})).unwrap();
+        h.frames(2);
+        assert!(h.app.session.active_sketch.is_none());
+        assert_eq!(h.app.ui.tab, "MODEL");
+    }
+
+    /// New Sketch is on the SHEET METAL tab, as it was before the ribbon redesign, and a sketch
+    /// started there stays on its tab until it opens.
+    #[test]
+    fn new_sketch_starts_from_the_sheet_metal_tab() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [40, 30]})).unwrap();
+        h.app.run("sketch.finish", json!({})).unwrap();
+        h.app.run("sheet.flange", json!({"name": "Sheet", "body_name": "Sheet"})).unwrap();
+        h.frames(3);
+        assert_eq!(h.app.ui.tab, "SHEET METAL");
+        h.step(&json!({"click": {"handle": "button:sketch.create"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.tab, "SHEET METAL", "New Sketch is on this tab, so it stays");
+        h.step(&json!({"click": {"plane": "XZ"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.session.active_sketch.is_some());
+        assert_eq!(h.app.ui.tab, "SKETCH");
+    }
+
+    /// New Sketch is on the SURFACE tab too, and a sketch started there stays on that tab until
+    /// it opens.
+    #[test]
+    fn new_sketch_starts_from_the_surface_tab() {
+        let mut h = crate::scenario::Harness::new();
+        h.step(&json!({"click": {"handle": "tab:SURFACE"}})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "button:sketch.create"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.ui.tab, "SURFACE", "New Sketch is on this tab, so it stays");
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
+        h.frames(2);
+        assert!(h.app.session.active_sketch.is_some());
+        assert_eq!(h.app.ui.tab, "SKETCH");
     }
 }

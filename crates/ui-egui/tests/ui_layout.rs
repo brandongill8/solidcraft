@@ -161,7 +161,7 @@ fn docked_ribbon_geometry_and_search() {
 
 #[test]
 fn finish_sketch_stays_at_the_right_when_groups_collapse() {
-    use solidcraft_ui_egui::scenario::handle_at;
+    use solidcraft_ui_egui::scenario::{count_of, handle_at};
     for layout in ["docked", "floating"] {
         let mut h = Harness::new();
         h.call("ui.set", json!({"layout":layout}));
@@ -172,7 +172,16 @@ fn finish_sketch_stays_at_the_right_when_groups_collapse() {
             let ribbon = rect_of("toolbar").unwrap();
             let exit = rect_of("ribbon:section:SKETCH:FINISH SKETCH").unwrap();
             let finish = rect_of("button:sketch.finish").unwrap();
-            assert_eq!(exit.right(), ribbon.right() - 4.0);
+            // Finish follows the last sketch panel; once panels spill into the » menu it sits at
+            // the right end, after it.
+            if count_of("toolbar_more").unwrap_or(0.0) > 0.0 {
+                assert_eq!(exit.right(), ribbon.right() - 4.0, "{layout} at {width}");
+            } else {
+                assert!(exit.right() <= ribbon.right() - 4.0, "{layout} at {width}");
+                let last = rect_of("panel:SKETCH:CONFIGURE").or_else(|| rect_of("panel:SKETCH:REFERENCE")).unwrap();
+                let group = rect_of("panel:SKETCH:FINISH SKETCH").unwrap();
+                assert!(group.left() - last.right() < 16.0, "{layout} at {width}: Finish follows the last panel");
+            }
             assert!(ribbon.contains_rect(finish));
             assert!(finish.bottom() < exit.top());
             assert!(handle_at("tab:SKETCH").is_some(), "the selected contextual tab scrolls into view");

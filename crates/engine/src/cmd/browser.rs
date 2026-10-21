@@ -559,18 +559,24 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
         let first = f.body_names.first().is_some_and(|n| !n.trim().is_empty());
         f.body_names.get(i).is_none_or(|n| n.trim().is_empty()) && (f.shell_piece_order || i < f.body_names.len() || !first)
     };
-    let later: Vec<(u64, Vec<String>)> = match s.doc.features.iter().position(|f| f.id == fid) {
-        Some(at) if s.doc.features.get(at).is_some_and(|f| counted(f, k)) => s
+    // Bodies later features name after this one (`Top (1)`, a split's other piece) keep their
+    // names too: they would otherwise follow it, and break what names them (#3510).
+    let derived = format!("{old} (");
+    let at = s.doc.features.iter().position(|f| f.id == fid);
+    let counts = at.and_then(|at| s.doc.features.get(at)).is_some_and(|f| counted(f, k));
+    let later: Vec<(u64, Vec<String>)> = match at {
+        Some(at) => s
             .doc
             .features
             .iter()
             .skip(at + 1)
             .filter_map(|f| {
                 let made: Vec<String> = s.model.result(f.id)?.state.bodies.iter().filter(|x| x.feature == f.id).map(|x| x.name.clone()).collect();
-                (0..made.len()).any(|i| counted(f, i)).then_some((f.id, made))
+                let keep = (counts && (0..made.len()).any(|i| counted(f, i))) || made.iter().any(|n| n.starts_with(&derived));
+                keep.then_some((f.id, made))
             })
             .collect(),
-        _ => Vec::new(),
+        None => Vec::new(),
     };
     let d = s.doc_mut();
     for (id, made) in &later {
@@ -769,6 +775,26 @@ mod tests {
         assert!(s.execute("body.rename", &json!({"body": "Lid", "name": " "})).is_err());
         run(&mut s, "edit.undo", json!({}));
         assert_eq!(names(&s)[1], b);
+    }
+
+    /// #3510: each piece of a split is renamed on its own. Renaming the split body leaves the
+    /// other piece, and the features that use it, as they were.
+    #[test]
+    fn split_pieces_are_renamed_on_their_own() {
+        let ok = |s: &Session| s.model.results.iter().all(|r| r.error.is_none());
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [0, 0, -5], "body_name": "Top"}));
+        run(&mut s, "solid.split_body", json!({"body": "Top", "plane": "XY"}));
+        assert_eq!(names(&s), vec!["Top", "Top (1)"]);
+        run(&mut s, "solid.move", json!({"bodies": ["Top (1)"], "translate": [0, 0, -5]}));
+        run(&mut s, "body.rename", json!({"body": "Top", "name": "Upper"}));
+        assert_eq!(names(&s), vec!["Upper", "Top (1)"]);
+        assert!(ok(&s), "the move still finds the other piece");
+        run(&mut s, "body.rename", json!({"body": "Top (1)", "name": "Lower"}));
+        assert_eq!(names(&s), vec!["Upper", "Lower"]);
+        assert!(ok(&s), "the move follows the renamed piece");
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(names(&s), vec!["Upper", "Top (1)"]);
     }
 
     /// #1108: a primitive's `targets` are its participants, kept beside its kind; a rename

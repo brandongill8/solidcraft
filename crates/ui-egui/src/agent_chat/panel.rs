@@ -64,7 +64,6 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if !shown(app) {
         return;
     }
-    super::settings::dialog(app, &ctx);
     if ctx.input_mut(|i| i.consume_shortcut(&SHORTCUT)) {
         toggle(app);
     }

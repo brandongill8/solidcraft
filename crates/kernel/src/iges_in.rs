@@ -9,6 +9,8 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
+mod assembly;
+
 /// Largest IGES file we read.
 pub const MAX_IGES_BYTES: usize = 512 << 20;
 const MAX_ENTITIES: usize = 2_000_000;
@@ -427,6 +429,8 @@ struct Tr<'a> {
     curve_work: usize,
     /// Composite curves (102) on the path being expanded.
     composites: Vec<i64>,
+    /// Farthest a trim loop's end was moved to close a gap (mm; see `close_gaps`).
+    snapped: f64,
 }
 
 fn xf_key(x: &Xf) -> [u64; 12] {
@@ -1032,24 +1036,35 @@ struct Sewer {
 }
 
 impl Sewer {
-    fn vertex(&mut self, p: V3) -> usize {
+    fn key(&self, p: V3) -> [i64; 3] {
         // Neighbouring buckets are this key plus or minus one, so leave room for that: a
         // coordinate near f64's range saturates the cast and the addition would overflow.
         let c = |x: f64| (x / self.tol).floor().clamp(-9e15, 9e15) as i64;
-        let key = [c(p[0]), c(p[1]), c(p[2])];
+        [c(p[0]), c(p[1]), c(p[2])]
+    }
+    /// The vertex within the tolerance of `p`, if there is one.
+    fn find(&self, p: V3) -> Option<usize> {
+        let key = self.key(p);
         for dx in -1..=1 {
             for dy in -1..=1 {
                 for dz in -1..=1 {
                     if let Some(list) = self.grid.get(&[key[0] + dx, key[1] + dy, key[2] + dz]) {
                         for &i in list {
                             if self.verts.get(i).is_some_and(|q| norm(sub(*q, p)) <= self.tol) {
-                                return i;
+                                return Some(i);
                             }
                         }
                     }
                 }
             }
         }
+        None
+    }
+    fn vertex(&mut self, p: V3) -> usize {
+        if let Some(i) = self.find(p) {
+            return i;
+        }
+        let key = self.key(p);
         self.verts.push(p);
         self.grid.entry(key).or_default().push(self.verts.len() - 1);
         self.verts.len() - 1
@@ -1225,12 +1240,21 @@ fn translate(text: &str) -> std::result::Result<(String, Vec<String>), String> {
     }
     let f = parse(text)?;
     let tol = (f.resolution * f.unit).clamp(1e-6, 0.05).max(1e-5);
-    let mut t =
-        Tr { f: &f, o: Out { lines: Vec::new() }, warnings: Vec::new(), tol, surf_cache: HashMap::new(), curve_work: 0, composites: Vec::new() };
+    let mut t = Tr {
+        f: &f,
+        o: Out { lines: Vec::new() },
+        warnings: Vec::new(),
+        tol,
+        surf_cache: HashMap::new(),
+        curve_work: 0,
+        composites: Vec::new(),
+        snapped: 0.0,
+    };
     // Header: units and context.
     let mm = t.o.add("(LENGTH_UNIT()NAMED_UNIT(*)SI_UNIT(.MILLI.,.METRE.))");
     let rad = t.o.add("(NAMED_UNIT(*)PLANE_ANGLE_UNIT()SI_UNIT($,.RADIAN.))");
     let sr = t.o.add("(NAMED_UNIT(*)SI_UNIT($,.STERADIAN.)SOLID_ANGLE_UNIT())");
+    let unc_line = t.o.lines.len();
     let unc = t.o.add(format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({}),#{mm},'distance_accuracy_value','')", r(tol)));
     let ctx = t.o.add(format!(
         "(GEOMETRIC_REPRESENTATION_CONTEXT(3)GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT((#{unc}))GLOBAL_UNIT_ASSIGNED_CONTEXT((#{mm},#{rad},#{sr}))REPRESENTATION_CONTEXT('',''))"
@@ -1240,77 +1264,49 @@ fn translate(text: &str) -> std::result::Result<(String, Vec<String>), String> {
     // Entities used by others (a B-rep's faces, a trimmed surface's curves) are not roots;
     // physically dependent entities have status digits 01 in columns 3–4, but files are lax:
     // collect references instead.
-    let mut solids: Vec<(u64, String)> = Vec::new();
+    let assembly = assembly::Assembly::read(&t, &seqs)?;
+    let mut solids = HashMap::new();
     let mut styles: Vec<(u64, [f32; 3])> = Vec::new();
     let mut n = 0usize;
+    let mut fallback = String::new();
+    let watch = crate::watch::current();
     for &s in &seqs {
+        if watch.as_ref().is_some_and(|w| w.cancelled()) {
+            return Err("IGES import cancelled".into());
+        }
         let Some(de) = f.des.get(&s) else { continue };
         if de.typ != 186 {
             continue;
         }
         n += 1;
-        // A name property (406 form 15) among the solid's trailing pointers, else the label.
-        let named = f.params.get(&s).and_then(|p| {
-            p.iter().skip(4).filter_map(|x| int(x)).filter(|x| *x > 0).find_map(|ptr| {
-                let d = f.des.get(&usize::try_from(ptr).ok()?)?;
-                (d.typ == 406 && d.form == 15).then(|| f.params.get(&usize::try_from(ptr).ok()?)?.get(2).cloned()).flatten()
-            })
-        });
-        let name = match named.filter(|x| !x.trim().is_empty()) {
-            Some(x) => x.trim().to_string(),
-            None if de.label.is_empty() => format!("Body{n}"),
-            None => de.label.clone(),
+        let name = if let Some(name) = assembly::entity_name(&f, s) {
+            name
+        } else {
+            fallback.clear();
+            let _ = write!(fallback, "Body{n}");
+            fallback.as_str()
         };
         match brep(&mut t, s as i64, &mut styles) {
             Ok((id, color)) => {
-                let named = {
-                    // Re-label the solid with its name.
-                    let line = t.o.lines.get(id as usize - 1).cloned().unwrap_or_default();
-                    line.replacen("('',", &format!("('{}',", name.replace('\'', "''")), 1)
-                };
                 if let Some(l) = t.o.lines.get_mut(id as usize - 1) {
-                    *l = named;
+                    *l = l.replacen("('',", &format!("('{}',", name.replace('\'', "''")), 1);
                 }
                 if let Some(c) = color {
                     styles.push((id, c));
                 }
-                solids.push((id, name));
+                solids.insert(s, id);
             }
             Err(e) => t.warn(format!("solid {name}: not read: {e}")),
         }
     }
-    // Trimmed and bounded surfaces not used by anything else: sewn into shells.
-    let mut faces = Vec::new();
-    let mut sw = Sewer { tol, verts: Vec::new(), grid: HashMap::new(), edges: Vec::new(), by_ends: HashMap::new() };
-    if solids.is_empty() {
-        for &s in &seqs {
-            let Some(de) = f.des.get(&s) else { continue };
-            if de.typ != 144 && de.typ != 143 && !(de.typ == 128 && is_root(&f, s)) {
-                continue;
-            }
-            match trimmed(&mut t, &mut sw, s as i64) {
-                Ok(fb) => faces.push(fb),
-                Err(e) => t.warn(format!("surface {s}: not read: {e}")),
-            }
-        }
-        if !faces.is_empty() {
-            orient(&mut faces);
-            let (shell, closed) = write_shell(&mut t.o, &sw, &faces, &mut styles);
-            let item = if closed {
-                t.o.add(format!("MANIFOLD_SOLID_BREP('Body1',#{shell})"))
-            } else {
-                t.warn("the surfaces do not close into a solid: imported as an open body");
-                t.o.add(format!("SHELL_BASED_SURFACE_MODEL('Body1',(#{shell}))"))
-            };
-            solids.push((item, "Body1".into()));
+    assembly.write(&mut t, &seqs, &solids, &mut styles, ctx)?;
+    if t.snapped > 0.0 {
+        // The STEP reader takes vertices up to ten times the stated accuracy off their curves:
+        // state enough to cover the ends `close_gaps` moved, and no more.
+        if let Some(l) = t.o.lines.get_mut(unc_line) {
+            *l = format!("UNCERTAINTY_MEASURE_WITH_UNIT(LENGTH_MEASURE({}),#{mm},'distance_accuracy_value','')", r(tol.max(t.snapped * 0.2)));
         }
     }
-    if solids.is_empty() {
-        let why = t.warnings.first().cloned().unwrap_or_else(|| "no solids or trimmed surfaces".into());
-        return Err(format!("IGES import: nothing to read ({why})"));
-    }
-    let items = solids.iter().map(|(i, _)| format!("#{i}")).collect::<Vec<_>>().join(",");
-    t.o.add(format!("ADVANCED_BREP_SHAPE_REPRESENTATION('',({items}),#{ctx})"));
     for (item, c) in styles {
         let rgb = t.o.add(format!("COLOUR_RGB('',{},{},{})", r(c[0] as f64), r(c[1] as f64), r(c[2] as f64)));
         let fasc = t.o.add(format!("FILL_AREA_STYLE_COLOUR('',#{rgb})"));
@@ -1331,23 +1327,140 @@ fn translate(text: &str) -> std::result::Result<(String, Vec<String>), String> {
     Ok((s, t.warnings))
 }
 
-/// A surface entity nobody refers to (a bare B-spline patch is a face of its own).
-fn is_root(f: &Iges, seq: usize) -> bool {
-    let target = seq.to_string();
-    !f.params
-        .iter()
-        .any(|(s, p)| *s != seq && f.des.get(s).is_some_and(|d| d.typ != 406 && d.typ != 402) && p.iter().skip(1).any(|x| x.trim() == target))
+/// Sew surfaces within their owning group, keeping different parts separate.
+fn sew_surfaces(
+    t: &mut Tr,
+    seqs: impl Iterator<Item = usize>,
+    name: &str,
+    styles: &mut Vec<(u64, [f32; 3])>,
+    faces: &mut Vec<FaceB>,
+    sw: &mut Sewer,
+) -> R<Option<u64>> {
+    faces.clear();
+    sw.verts.clear();
+    sw.grid.clear();
+    sw.edges.clear();
+    sw.by_ends.clear();
+    let watch = crate::watch::current();
+    let mut drafts = Vec::new();
+    for seq in seqs {
+        if watch.as_ref().is_some_and(|w| w.cancelled()) {
+            return Err("IGES import cancelled".into());
+        }
+        match trimmed(t, sw.tol, seq as i64) {
+            Ok(face) => drafts.push(face),
+            Err(e) => t.warn(format!("surface {seq}: not read: {e}")),
+        }
+    }
+    close_gaps(t, &mut drafts, sw.tol);
+    for d in drafts {
+        let loops = d.loops.iter().map(|l| l.iter().map(|s| sw.edge(s)).collect()).collect();
+        faces.push(FaceB { surface: d.surface, sense: true, loops, color: d.color });
+    }
+    if faces.is_empty() {
+        return Ok(None);
+    }
+    orient(faces);
+    let (shell, closed) = write_shell(&mut t.o, sw, faces, styles);
+    let name = name.replace('\'', "''");
+    Ok(Some(if closed {
+        t.o.add(format!("MANIFOLD_SOLID_BREP('{name}',#{shell})"))
+    } else {
+        t.warn("the surfaces do not close into a solid: imported as an open body");
+        t.o.add(format!("SHELL_BASED_SURFACE_MODEL('{name}',(#{shell}))"))
+    }))
+}
+
+/// A face read from a trimmed or bounded surface, its loops not yet sewn.
+struct Draft {
+    surface: u64,
+    loops: Vec<Vec<Seg>>,
+    color: Option<[f32; 3]>,
+}
+
+/// Gaps between the pieces of a trim loop wider than this (mm) are left open: past it, the ends
+/// may be different corners of the model rather than one corner written loosely.
+const MAX_TRIM_GAP: f64 = 0.1;
+/// ...and a gap must also be at most this share of the shorter piece on either side.
+const MAX_TRIM_GAP_SHARE: f64 = 0.05;
+
+/// Close the small gaps between consecutive pieces of the faces' trim loops. Some exporters
+/// write each piece's model-space curve separately, and consecutive pieces can then miss by a
+/// few micrometres to a tenth of a millimetre, well past the file's stated resolution: the loop
+/// does not close, its face is lost and the shell stays open. The two ends of each such gap, and
+/// every other piece end at either of them (the neighbouring faces at that corner), move to
+/// their mean, so all the faces there sew to one vertex. A gap wider than `MAX_TRIM_GAP`, or not
+/// small next to its pieces, is left open; the sewing tolerance stays the file's.
+fn close_gaps(t: &mut Tr, faces: &mut [Draft], tol: f64) {
+    let length = |s: &Seg| norm(sub(s.q, s.a)) + norm(sub(s.mid, s.q)) + norm(sub(s.q3, s.mid)) + norm(sub(s.b, s.q3));
+    // The gaps' ends as vertices, joined into groups (union-find).
+    let mut ends = Sewer { tol, verts: Vec::new(), grid: HashMap::new(), edges: Vec::new(), by_ends: HashMap::new() };
+    let mut parent: Vec<usize> = Vec::new();
+    let root = |parent: &[usize], mut i: usize| {
+        while let Some(&p) = parent.get(i).filter(|p| **p != i) {
+            i = p;
+        }
+        i
+    };
+    for l in faces.iter().flat_map(|f| f.loops.iter()) {
+        for (i, prev) in l.iter().enumerate() {
+            let Some(next) = l.get((i + 1) % l.len()) else { continue };
+            let gap = norm(sub(next.a, prev.b));
+            if gap <= tol || gap > MAX_TRIM_GAP || gap > MAX_TRIM_GAP_SHARE * length(prev).min(length(next)) {
+                continue;
+            }
+            let (a, b) = (ends.vertex(prev.b), ends.vertex(next.a));
+            while parent.len() < ends.verts.len() {
+                parent.push(parent.len());
+            }
+            let (ra, rb) = (root(&parent, a), root(&parent, b));
+            if let Some(x) = parent.get_mut(ra) {
+                *x = rb;
+            }
+        }
+    }
+    if ends.verts.is_empty() {
+        return;
+    }
+    // Each group's mean; a group that spreads wider than a gap may be is left alone.
+    let mut sums: HashMap<usize, (V3, usize)> = HashMap::new();
+    for (i, p) in ends.verts.iter().enumerate() {
+        let e = sums.entry(root(&parent, i)).or_insert(([0.0; 3], 0));
+        e.0 = add(e.0, *p);
+        e.1 += 1;
+    }
+    let mean: HashMap<usize, V3> = sums.into_iter().map(|(r, (s, n))| (r, mul(s, 1.0 / n as f64))).collect();
+    let mut to: Vec<Option<V3>> = ends.verts.iter().enumerate().map(|(i, _)| mean.get(&root(&parent, i)).copied()).collect();
+    for (i, p) in ends.verts.iter().enumerate() {
+        if to.get(i).copied().flatten().is_some_and(|m| norm(sub(m, *p)) > MAX_TRIM_GAP / 2.0) {
+            let r = root(&parent, i);
+            for (k, x) in to.iter_mut().enumerate() {
+                if root(&parent, k) == r {
+                    *x = None;
+                }
+            }
+        }
+    }
+    let mut moved = 0.0f64;
+    let mut snap = |p: &mut V3| {
+        if let Some(m) = ends.find(*p).and_then(|i| to.get(i).copied().flatten()) {
+            moved = moved.max(norm(sub(m, *p)));
+            *p = m;
+        }
+    };
+    for s in faces.iter_mut().flat_map(|f| f.loops.iter_mut()).flat_map(|l| l.iter_mut()) {
+        snap(&mut s.a);
+        snap(&mut s.b);
+    }
+    t.snapped = t.snapped.max(moved);
 }
 
 /// A trimmed (144) or bounded (143) surface, or a bare B-spline surface, as a face.
-fn trimmed(t: &mut Tr, sw: &mut Sewer, seq: i64) -> R<FaceB> {
+fn trimmed(t: &mut Tr, tol: f64, seq: i64) -> R<Draft> {
     let de = t.de(seq)?;
     let xf = t.own_xf(seq, 0)?;
     let color = color_of(t, seq);
-    let loop_of = |_t: &mut Tr, sw: &mut Sewer, segs: Vec<Seg>| -> Vec<(usize, bool)> {
-        let tol = sw.tol;
-        segs.iter().filter(|s| norm(sub(s.a, s.b)) > tol || norm(sub(s.a, s.mid)) > tol).map(|s| sw.edge(s)).collect()
-    };
+    let loop_of = |segs: Vec<Seg>| -> Vec<Seg> { segs.into_iter().filter(|s| norm(sub(s.a, s.b)) > tol || norm(sub(s.a, s.mid)) > tol).collect() };
     match de.typ {
         144 => {
             let surf_seq = t.i(seq, 1)?;
@@ -1356,16 +1469,16 @@ fn trimmed(t: &mut Tr, sw: &mut Sewer, seq: i64) -> R<FaceB> {
             let n2 = t.i(seq, 3)?.clamp(0, MAX_LIST as i64) as usize;
             let mut loops = Vec::new();
             let outer = if n1 == 0 { t.natural_boundary(surf_seq, &xf)? } else { cos_curve(t, t.i(seq, 4)?, &xf, surf_seq)? };
-            loops.push(loop_of(t, sw, outer));
+            loops.push(loop_of(outer));
             for k in 0..n2 {
                 let segs = cos_curve(t, t.i(seq, 5 + k)?, &xf, surf_seq)?;
-                loops.push(loop_of(t, sw, segs));
+                loops.push(loop_of(segs));
             }
             loops.retain(|l| !l.is_empty());
             if loops.is_empty() {
                 return Err("no boundary".into());
             }
-            Ok(FaceB { surface, sense: true, loops, color })
+            Ok(Draft { surface, loops, color })
         }
         143 => {
             let surf_seq = t.i(seq, 2)?;
@@ -1375,19 +1488,19 @@ fn trimmed(t: &mut Tr, sw: &mut Sewer, seq: i64) -> R<FaceB> {
             for k in 0..n {
                 let b = t.i(seq, 4 + k)?;
                 let segs = boundary_141(t, b, &xf)?;
-                loops.push(loop_of(t, sw, segs));
+                loops.push(loop_of(segs));
             }
             loops.retain(|l| !l.is_empty());
             if loops.is_empty() {
                 return Err("no boundary".into());
             }
-            Ok(FaceB { surface, sense: true, loops, color })
+            Ok(Draft { surface, loops, color })
         }
         _ => {
             let surface = t.surface(seq, &Xf::ID)?;
             let outer = t.natural_boundary(seq, &Xf::ID)?;
-            let l = loop_of(t, sw, outer);
-            Ok(FaceB { surface, sense: true, loops: vec![l], color })
+            let l = loop_of(outer);
+            Ok(Draft { surface, loops: vec![l], color })
         }
     }
 }

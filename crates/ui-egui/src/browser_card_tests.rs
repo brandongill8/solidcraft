@@ -239,3 +239,16 @@ fn browser_width_rejects_hostile_preferences_and_tiny_windows_still_fit() {
         assert!(available.contains_rect(bounds));
     }
 }
+
+#[test]
+fn a_long_body_name_stays_inside_the_card_and_ends_in_an_ellipsis() {
+    let mut h = Harness::new();
+    h.call("ui.resize", json!({"width":1400,"height":900}));
+    let name = "W".repeat(200);
+    h.app.run("solid.box", json!({"body_name":name, "operation":"new", "length":10, "width":10, "height":10})).unwrap();
+    h.settle();
+    let card = rect_of("browser:card").unwrap();
+    let label = rect_of(&format!("row_label:{name}")).expect("the body row is drawn");
+    assert!(label.right() <= card.right(), "{label:?} spills out of {card:?}");
+    assert!(label.width() > 100.0, "the name keeps the room it has: {label:?}");
+}

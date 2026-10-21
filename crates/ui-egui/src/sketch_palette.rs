@@ -43,6 +43,18 @@ pub fn has_geometry(sketch: &solidcraft_engine::sketch::Sketch) -> bool {
     !sketch.curves.is_empty() || !sketch.wires.is_empty()
 }
 
+/// Nothing the user added: no curve, 3D curve, constraint or dimension, pattern, projection,
+/// text or offset, and no point but the fixed origin.
+pub fn is_blank(sketch: &solidcraft_engine::sketch::Sketch) -> bool {
+    !has_geometry(sketch)
+        && sketch.constraints.is_empty()
+        && sketch.patterns.is_empty()
+        && sketch.links.is_empty()
+        && sketch.offsets.is_empty()
+        && sketch.freeform_offsets.is_empty()
+        && sketch.points.iter().all(|p| p.id == "origin")
+}
+
 /// The degrees-of-freedom line: "No geometry yet" (an empty sketch only has its fixed origin),
 /// "Fully constrained" or "N degrees of freedom".
 pub fn dof_text(dof: usize, ok: bool, has_geometry: bool) -> String {
@@ -950,5 +962,85 @@ mod tests {
         h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[10,5]})).unwrap();
         h.settle();
         assert_ne!(line(&h), "No geometry yet", "a drawn rectangle is geometry");
+    }
+
+    /// One Esc cancels the tool and keeps the sketch open; two quick presses finish it (the
+    /// sketch is kept and listed in the timeline), also when the first press cancelled a tool.
+    #[test]
+    fn escape_cancels_then_a_quick_second_escape_finishes_the_sketch() {
+        let apart = |h: &mut crate::scenario::Harness| h.frames(60);
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
+        h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap();
+        h.settle();
+        h.step(&json!({"start":"sketch.line"})).unwrap();
+        assert!(h.app.tool.is_some());
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert!(h.app.tool.is_none(), "one Esc puts the tool down");
+        apart(&mut h);
+        h.step(&json!({"key":"Escape"})).unwrap();
+        apart(&mut h);
+        assert!(h.app.session.active_sketch.is_some(), "single presses keep the sketch open");
+
+        // A quick double press finishes and keeps the sketch.
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.settle();
+        assert!(h.app.session.active_sketch.is_none(), "a double Esc finishes the sketch");
+        assert_eq!(h.app.ui.tab, "MODEL");
+        assert!(crate::scenario::handle_at("timeline:Sketch1").is_some(), "the sketch is kept");
+        let sketch = h.app.session.execute("sketch.inspect", &json!({"sketch": 1})).unwrap();
+        assert_eq!(sketch["curves"].as_array().map(Vec::len), Some(4), "{sketch}");
+
+        // With a tool active: the first press cancels it, the second finishes.
+        h.step(&json!({"click": {"handle": "timeline:Sketch1"}, "double": true})).unwrap();
+        h.settle();
+        assert!(h.app.session.active_sketch.is_some());
+        apart(&mut h);
+        h.step(&json!({"start":"sketch.circle.center"})).unwrap();
+        assert!(h.app.tool.is_some());
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.settle();
+        assert!(h.app.tool.is_none() && h.app.session.active_sketch.is_none());
+        assert!(crate::scenario::handle_at("timeline:Sketch1").is_some());
+        // Outside a sketch a double Esc only clears, as before.
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        assert!(h.app.session.active_sketch.is_none());
+    }
+
+    /// A double Esc on a sketch left blank takes it away (no empty sketch in the browser or the
+    /// timeline, one undo step) and puts the view back; one line is enough to keep it.
+    #[test]
+    fn a_quick_double_escape_discards_a_blank_sketch_and_keeps_one_with_a_line() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.view", json!({"view": "iso"}));
+        h.frames(3);
+        let undo = h.app.session.undo.len();
+        h.step(&json!({"start":"sketch.create"})).unwrap();
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
+        h.settle();
+        assert!(h.app.session.active_sketch.is_some());
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.settle();
+        crate::scenario::check(&mut h, &json!({"sketching": false, "camera": {"yaw_deg": -45, "pitch_deg": 35}})).unwrap();
+        assert_eq!(h.app.ui.tab, "MODEL");
+        assert!(h.app.session.doc.features.is_empty(), "the blank sketch is gone");
+        assert!(crate::scenario::handles("timeline:").iter().all(|(n, _)| !n.contains("Sketch")));
+        assert!(crate::scenario::handle_at("row:Sketch1").is_none());
+        assert!(h.app.session.undo.len() <= undo + 2, "creating and discarding are at most two steps");
+
+        h.step(&json!({"start":"sketch.create"})).unwrap();
+        h.step(&json!({"click": {"plane": "XY"}})).unwrap();
+        h.app.run("sketch.line", json!({"points": [[0, 0], [30, 10]]})).unwrap();
+        h.settle();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.step(&json!({"key":"Escape"})).unwrap();
+        h.settle();
+        assert!(h.app.session.active_sketch.is_none());
+        assert_eq!(h.app.session.doc.features.len(), 1, "a sketch with a line is kept");
+        assert!(crate::scenario::handles("timeline:").iter().any(|(n, _)| n.contains("Sketch")));
     }
 }

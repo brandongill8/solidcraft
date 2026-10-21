@@ -59,6 +59,25 @@ with `control.pending`: `{"pending": <id>, "method": …, "done": false}` while 
 connection is refused at once with `{"ok": false, "busy": true, "error": "busy: …"}` and not
 run, so nothing is queued to apply unseen behind it.
 
+`control.pending` answers only for its own connection. `control.running` answers for the whole
+app, the same on every connection, at once (it never waits behind a running request, and a
+connection may ask it while it is `busy`): every request the app has been sent and has not
+answered yet, oldest first, from any connection, including a timed-out one whose connection has
+since closed:
+
+```text
+{"id":1,"method":"control.running","token":"…"}
+→ {"id":1,"ok":true,"result":{"running":[
+    {"connection":3,"id":17,"method":"engine.execute","command":"file.export","running_s":312.4,"queued":false},
+    {"connection":5,"id":2,"method":"engine.batch","steps":12,"running_s":4.1,"queued":true,"self":true}]}}
+```
+
+`running_s` counts seconds since the request arrived; `queued` is true while it still waits its
+turn behind another. `command` is the command id of `engine.execute` (a known one only) and
+`steps` the length of `engine.batch` or `engine.script`; parameters are never shown, so file
+paths and expressions stay with the connection that sent them. `self` marks the asking
+connection's own request. `{"running": []}` when the app is idle.
+
 Any request's `params` may carry `allow_paths: ["/abs/folder", …]`: every file that request
 reads, writes or deletes (command paths such as `file.export`'s `path` or `doc.recovery_*`'s
 `dir`, `ui.render`, `ui.screenshot`) must then lie inside one of those folders after `..` and
@@ -79,6 +98,38 @@ MCP server sends its folders this way on every request ([mcp.md](mcp.md)). Witho
 | `document.inspect` | `measure?`: bool | parameters, timeline (errors, timings), bodies, sketches, selection (assembly joints: `engine.execute` `joint.inspect {joint?}`, which reads only: each joint's two origins with the occurrence, the snap as saved, the feature, face, edge or sketch curve its names refer to, and whether it resolves or why not; kind, offset, angle, flip, values, limits, expressions and motion links) |
 
 Commands never open dialogs when run this way. `solidcraft-cli commands` prints the same registry.
+
+### Slow commands and the window (#1989)
+
+With the preference **Preferences > AI > Keep the window responsive while agents run commands**
+on (`ui.prefs {"agent_off_thread": true}`; off by default), a design change in the desktop app
+that takes longer than about 150 ms (an `engine.execute` of a
+modelling command, an `engine.batch` of them) computes off the window thread, so the window keeps
+drawing and answering while it runs:
+- The command is evaluated ahead on a copy of the design, which also makes the display meshes of
+  the bodies it ends with. Then it runs for real on the window thread, reusing every feature the
+  evaluation computed (kept for it, whatever the bounded evaluation cache dropped meanwhile), so
+  the window waits only for the bookkeeping. Its reply, undo step, autosave and crash journal are
+  the same as before. With the agent cursor shown, the evaluation runs while the pointer glides
+  to the button, and the pointer waits there until it is done.
+- Meanwhile `ui.*` requests, `document.inspect` and `engine.commands` are answered at once
+  (inspection shows the design as it was), also while the agent cursor acts a command out. Later
+  design changes, from any connection, wait their turn and run in the order they arrived.
+- A person's edit made meanwhile goes first. The agent's command is then computed again for the
+  design as it is and lands after that edit, never in the middle of it. If the design was replaced
+  (another tab made active, a new file opened), the request fails with `… the design was
+  replaced … nothing was applied`.
+- A chip in the view names the command, with **Stop**. Stop answers
+  `{"ok": false, "stopped": true, "error": "stopped: …; nothing was applied"}` and the requests
+  waiting behind it go on. The computation finishes unseen in the background.
+- `file.export` and `file.save_mesh` change nothing in the design. They run on a copy of the
+  design as it was when they were asked for, and nothing waits behind them.
+- Batches with `timings` or `profile` still run on the window thread, so the times they report
+  measure the real work.
+
+Timeouts and `control.pending` work as described above. A slow command is still answered when it
+is done, from a later frame. With the preference off, commands run on the window thread, and the
+window waits for each one.
 
 Product images use `render.preflight/start/status/cancel/export` through `engine.execute`.
 Keep the returned session-scoped job ID for subsequent calls; status does not block or

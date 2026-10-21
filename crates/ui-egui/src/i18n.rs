@@ -35,6 +35,9 @@ static ENGLISH: Catalog = Catalog::new("en", "English", include_str!(concat!(env
 static CZECH: Catalog = Catalog::new("cs", "Čeština", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/cs.json")));
 static DANISH: Catalog = Catalog::new("da", "Dansk", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/da.json")));
 static GERMAN: Catalog = Catalog::new("de", "Deutsch", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/de.json")));
+/// English in UK spelling: only the messages whose spelling differs; the rest are English's.
+static ENGLISH_UK: Catalog =
+    Catalog::new("en-GB", "English (UK)", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/en-GB.json")));
 static SPANISH: Catalog = Catalog::new("es", "Español (España)", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/es.json")));
 static FRENCH: Catalog = Catalog::new("fr", "Français", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/fr.json")));
 static GALICIAN: Catalog = Catalog::new("gl", "Galego", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales/gl.json")));
@@ -66,6 +69,7 @@ pub const LOCALES: &[&Catalog] = &[
     &CZECH,
     &DANISH,
     &GERMAN,
+    &ENGLISH_UK,
     &SPANISH,
     &FRENCH,
     &GALICIAN,
@@ -250,6 +254,18 @@ mod tests {
         let ids: Vec<&str> = LOCALES.iter().map(|c| c.id).collect();
         assert_eq!(ids.first(), Some(&"en"));
         assert!(ids[1..].is_sorted(), "{ids:?}");
+    }
+
+    /// English (UK) holds only the messages it spells differently; the rest are English's.
+    #[test]
+    fn english_uk_shows_uk_spelling_and_english_for_the_rest() {
+        let (uk, english) = (Locale::for_language("en-GB"), Locale::for_language("en"));
+        assert_eq!(uk.name(), "English (UK)");
+        assert_eq!(uk.label("Center X"), "Centre X");
+        assert_eq!(uk.label("Customize Toolbar"), "Customise Toolbar");
+        assert_eq!(uk.text("ui.design_properties.organization"), "Organisation");
+        assert_eq!(uk.text("ui.preferences"), english.text("ui.preferences"));
+        assert_eq!(english.label("Center X"), "Center X");
     }
 
     /// A new design's name, `Untitled`, is a default name like `Sketch1`: it shows translated

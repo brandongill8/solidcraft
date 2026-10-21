@@ -11,7 +11,8 @@ use solidcraft_geom::Vec3;
 
 use super::{CommandSpec, not_in_sketch};
 use crate::params::{bad, bool_, expr, req_expr, str_, string_list, vec2, vec3};
-use crate::schema::{BoxParams, ExtrudeParams, FeatureResult, TypedContract, output_schema_for};
+use crate::schema::features::{BoxParams, ExtrudeParams, FeatureResult};
+use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
 const BOX_CONTRACT: TypedContract<BoxParams> = TypedContract::new();
@@ -67,7 +68,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("hole")
         .key("H")
-        .params("position: [x,y,z] on a face (numbers, or length expressions the hole follows) | sketch + points: [sketch point ids] (one hole each, perpendicular to the sketch, into the material on whichever side of the sketch plane it is) | sketch alone (every sketch point: standalone points and circle centres); flip?: bool (sketch points: drill to the other side); single?: bool (with one sketch point: a Single hole that follows the point, drilled into the face there); direction?: [x,y,z] (default: into the face, against its outward normal; one that leaves the face is mirrored into it; ignored with sketch points unless single); diameter | thread (a tapped hole: the tap drill, major − pitch) | clearance: \"M6\" with fit?: close|normal|loose (ISO 273); depth? (default through all) | to?: [x,y,z] (To Object: drill to that face or point); type?: simple|drilled|counterbore|countersink; tip_angle?; cb_diameter?, cb_depth?; cs_diameter?, cs_angle?; thread?: \"M6\" (cosmetic)"),
+        .params("position: [x,y,z] on a face (numbers, or length expressions the hole follows) | sketch + points: [sketch point ids] (one hole each, perpendicular to the sketch, into the material on whichever side of the sketch plane it is) | sketch alone (every sketch point: standalone points and circle centres); flip?: bool (sketch points: drill to the other side); single?: bool (with one sketch point: a Single hole that follows the point, drilled into the face there); direction?: [x,y,z] (default: into the face, against its outward normal; one that leaves the face is mirrored into it; ignored with sketch points unless single); diameter | thread (a tapped hole: the tap drill, major − pitch) | clearance: \"M6\" with fit?: close|normal|loose (ISO 273); depth? (default through all) | to?: [x,y,z] (To Object: drill to that face or point); type?: simple|drilled|counterbore|countersink; tip_angle?; cb_diameter?, cb_depth?; cs_diameter?, cs_angle?; thread?: \"M6\" (cosmetic); targets?: [body] (the bodies to drill; holes at the points of a sketch on a body's face default to that body, found along the holes' direction on it alone; explicit targets or participants override, [\"*\"] every body)"),
     CommandSpec::new("solid.pipe", "Pipe", pipe)
         .at("SOLID", "CREATE")
         .icon("pipe")
@@ -204,13 +205,16 @@ fn auto_operation_in(s: &Session, p: &Value, world_faces: bool) -> Option<&'stat
     // Match the evaluator's implicit participants: a grouped cut from an empty
     // assembly component considers every body; otherwise keep the active scope.
     // Explicit participants override either default.
+    // A component with no body of its own works on those of the components inside it (#3223).
     let parts = string_list(p, "participants");
     let implicit_all = grouped.is_some() && !st.bodies.iter().any(|body| s.doc.model_body_component(body) == s.active_component);
-    let bodies: Vec<_> = st
-        .bodies
-        .iter()
-        .filter(|b| if parts.is_empty() { implicit_all || s.doc.model_body_component(b) == s.active_component } else { parts.contains(&b.name) })
-        .collect();
+    let bodies: Vec<_> = if !parts.is_empty() {
+        st.bodies.iter().filter(|b| parts.contains(&b.name)).collect()
+    } else if implicit_all {
+        st.bodies.iter().collect()
+    } else {
+        active_scope(s, &st)
+    };
     if bodies.is_empty() {
         return Some("new");
     }
@@ -241,11 +245,7 @@ pub(super) fn operation(p: &Value, cmd: &str) -> Result<Operation> {
 /// The sketch a feature uses: `sketch` param, the active sketch, or the last sketch.
 pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
     if let Some(v) = p.get("sketch") {
-        let key = match v {
-            Value::Number(n) => n.to_string(),
-            Value::String(x) => x.clone(),
-            _ => return Err(bad(cmd, "`sketch` must be an id or name")),
-        };
+        let key = sketch_key(Some(v)).ok_or_else(|| bad(cmd, "`sketch` must be an id or name"))?;
         let f = s.doc.find_feature(&key).ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
         return match f.kind {
             FeatureKind::Sketch { .. } => Ok(f.id),
@@ -497,11 +497,12 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
     }
     // A cut or intersect made where the active component has no body of its own (a sketch in
     // the assembly's root, cutting through the parts, #1234) would have nothing to work on: it
-    // takes part in every body instead, which it changes only where it meets them.
+    // takes part in every body instead, which it changes only where it meets them. An extrude's
+    // own operation counts too: an automatic one that came out as a cut (#3223).
     let participants = if participants.is_empty()
         && !primitive
         && (matches!(str_(p, "operation").and_then(Operation::parse), Some(Operation::Cut | Operation::Intersect))
-            || p.get("faces").is_some() && matches!(&kind, FeatureKind::Extrude { operation: Operation::Cut | Operation::Intersect, .. }))
+            || matches!(&kind, FeatureKind::Extrude { operation: Operation::Cut | Operation::Intersect, .. }))
         && {
             let st = s.model.state();
             !st.bodies.is_empty() && !st.bodies.iter().any(|b| s.doc.model_body_component(b) == s.active_component)
@@ -655,14 +656,40 @@ fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The body whose face `sketch` is attached to (on the face itself, not offset from it), when
-/// it is a body of the active component.
+/// it is one the active component works on ([`active_scope`]).
 fn sketch_face_body(s: &Session, sketch: u64) -> Option<String> {
     let FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { anchor: Some(anchor), .. }, .. } = &s.doc.feature(sketch)?.kind else {
         return None;
     };
     let st = s.model.state();
-    let body = st.body(&anchor.target.body)?;
-    (s.doc.model_body_component(body) == s.active_component).then(|| body.name.clone())
+    active_scope(s, &st).into_iter().find(|b| b.name == anchor.target.body).map(|b| b.name.clone())
+}
+
+/// The bodies a feature of the active component works on when it names none: the component's
+/// own. A component with no body of its own (the root of an opened STEP assembly, whose parts
+/// are components inside it) works on the bodies of the components inside it whose geometry is
+/// in its own frame, as an import places it: a profile sketched on such a part's face meets the
+/// part where it is shown (#3223).
+fn active_scope<'a>(s: &Session, st: &'a solidcraft_doc::ModelState) -> Vec<&'a solidcraft_doc::ModelBody> {
+    let active = s.active_component;
+    let own: Vec<_> = st.bodies.iter().filter(|b| s.doc.model_body_component(b) == active).collect();
+    if !own.is_empty() {
+        return own;
+    }
+    let Some(into_active) = solidcraft_doc::mat_inverse(&s.doc.component_transform(active)) else { return own };
+    st.bodies
+        .iter()
+        .filter(|b| {
+            let comp = s.doc.model_body_component(b);
+            if !s.doc.component_within(comp, active) {
+                return false;
+            }
+            let frame = s.doc.component_transform(comp);
+            let world = s.doc.model_body_offset(b).map_or(frame, |offset| solidcraft_doc::mat_mul(&frame, offset));
+            let rel = solidcraft_doc::mat_mul(&into_active, &world);
+            rel.iter().flatten().zip(solidcraft_doc::IDENTITY.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-9)
+        })
+        .collect()
 }
 
 /// A thin extrude's wall from its parameters: the sketch's curves it follows (every drawn
@@ -970,43 +997,62 @@ fn edge_points(s: &Session, p: &Value, cmd: &str) -> Result<Vec<Vec3>> {
     let mut candidates: Option<Vec<(f64, Vec<solidcraft_kernel::EdgeInfo>)>> = None;
     let mut out = Vec::new();
     for e in a {
-        if let Some(pt) = vec3(e).or_else(|| e.get("point").and_then(vec3)) {
-            let bodies = candidates.get_or_insert_with(|| {
-                // Mesh bodies have no edges to pick: rounding one is refused later, saying why.
-                st.bodies
-                    .iter()
-                    .filter(|b| named.is_none_or(|n| b.name == n) && !b.body.is_mesh())
-                    .filter_map(|b| {
-                        let size = b.body.size();
-                        b.body.edges((size * 2e-3).max(1e-3)).ok().map(|edges| (size, edges))
-                    })
-                    .collect()
-            });
-            let mut nearest = f64::INFINITY;
-            let on_edge = bodies.iter().any(|(size, edges)| {
-                let d = edges
-                    .iter()
-                    .flat_map(|e| e.points.windows(2))
-                    .filter_map(|w| Some(pt.dist_to_segment(*w.first()?, *w.get(1)?)))
-                    .fold(f64::INFINITY, f64::min);
-                nearest = nearest.min(d);
-                d <= size * 0.05 + 1e-3
-            });
-            if !on_edge && !bodies.is_empty() {
-                let far = if nearest.is_finite() { format!("the nearest edge is {nearest:.3} mm away") } else { "there is no edge".to_string() };
-                return Err(bad(cmd, format!("no edge at [{}, {}, {}]: {far}", pt.x, pt.y, pt.z)));
+        let pt = match edge_ref_form(e).map_err(|why| bad(cmd, why))? {
+            EdgeRefForm::Point(pt) => pt,
+            EdgeRefForm::Index { body, index } => {
+                let idx = index as usize;
+                let b = st.body(body).ok_or_else(|| bad(cmd, format!("no body `{body}`")))?;
+                let tol = (b.body.size() * 2e-3).max(1e-3);
+                let edges = b.body.edges(tol)?;
+                out.push(edges.get(idx).ok_or_else(|| bad(cmd, format!("{body} has no edge {idx}")))?.mid);
+                continue;
             }
-            out.push(pt);
-            continue;
+        };
+        let bodies = candidates.get_or_insert_with(|| {
+            // Mesh bodies have no edges to pick: rounding one is refused later, saying why.
+            st.bodies
+                .iter()
+                .filter(|b| named.is_none_or(|n| b.name == n) && !b.body.is_mesh())
+                .filter_map(|b| {
+                    let size = b.body.size();
+                    b.body.edges((size * 2e-3).max(1e-3)).ok().map(|edges| (size, edges))
+                })
+                .collect()
+        });
+        let mut nearest = f64::INFINITY;
+        let on_edge = bodies.iter().any(|(size, edges)| {
+            let d = edges
+                .iter()
+                .flat_map(|e| e.points.windows(2))
+                .filter_map(|w| Some(pt.dist_to_segment(*w.first()?, *w.get(1)?)))
+                .fold(f64::INFINITY, f64::min);
+            nearest = nearest.min(d);
+            d <= size * 0.05 + 1e-3
+        });
+        if !on_edge && !bodies.is_empty() {
+            let far = if nearest.is_finite() { format!("the nearest edge is {nearest:.3} mm away") } else { "there is no edge".to_string() };
+            return Err(bad(cmd, format!("no edge at [{}, {}, {}]: {far}", pt.x, pt.y, pt.z)));
         }
-        let body = e.get("body").and_then(Value::as_str).ok_or_else(|| bad(cmd, "an edge is a point [x,y,z], {point} or {body, index}"))?;
-        let idx = e.get("index").and_then(Value::as_u64).ok_or_else(|| bad(cmd, "edge `index` must be a number"))? as usize;
-        let b = st.body(body).ok_or_else(|| bad(cmd, format!("no body `{body}`")))?;
-        let tol = (b.body.size() * 2e-3).max(1e-3);
-        let edges = b.body.edges(tol)?;
-        out.push(edges.get(idx).ok_or_else(|| bad(cmd, format!("{body} has no edge {idx}")))?.mid);
+        out.push(pt);
     }
     Ok(out)
+}
+
+/// An edge reference as given, before it is looked up: see [`edge_points`].
+pub(crate) enum EdgeRefForm<'a> {
+    Point(Vec3),
+    Index { body: &'a str, index: u64 },
+}
+
+/// What [`edge_points`] reads one edge as, without the design: a point on it (`[x, y, z]` or
+/// `{point}`), else `{body, index}`.
+pub(crate) fn edge_ref_form(e: &Value) -> std::result::Result<EdgeRefForm<'_>, &'static str> {
+    if let Some(pt) = vec3(e).or_else(|| e.get("point").and_then(vec3)) {
+        return Ok(EdgeRefForm::Point(pt));
+    }
+    let body = e.get("body").and_then(Value::as_str).ok_or("an edge is a point [x,y,z], {point} or {body, index}")?;
+    let index = e.get("index").and_then(Value::as_u64).ok_or("edge `index` must be a number")?;
+    Ok(EdgeRefForm::Index { body, index })
 }
 
 /// Press Pull: a face moves along its normal (an extrude that joins outward or cuts inward); an
@@ -1807,15 +1853,25 @@ fn hole(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(vec3(v).ok_or_else(|| bad(cmd, "`to` must be a point [x, y, z] on the face to drill to"))?),
         None => None,
     };
-    // A hole picked on a body of another component (a moved one, shown where it is placed) cuts
-    // that body: the pick is already in that body's frame, and the component's own bodies alone
-    // would leave nothing to cut.
     let mut p = p.clone();
-    if points.is_none()
-        && p.get("participants").is_none()
-        && let Some(body) = body_of_other_component_at(s, position)
-    {
-        p["participants"] = json!([body]);
+    let targets = string_list(&p, "targets");
+    if p.get("participants").is_none() {
+        // The bodies to drill, as `targets` (like an extrude's): its participants.
+        if !targets.is_empty() {
+            p["participants"] = json!(targets);
+        } else if let Some(body) = points.as_ref().filter(|(sp, _, _)| !sp.single).and_then(|(sp, _, _)| sketch_face_body(s, sp.sketch.0)) {
+            // Holes at the points of a sketch on a body's face drill that body (#2882): a body
+            // further along, past the face, doesn't take them. Stored, so recomputes and
+            // reopening keep the same scope.
+            p["participants"] = json!([body]);
+        } else if points.is_none()
+            && let Some(body) = body_of_other_component_at(s, position)
+        {
+            // A hole picked on a body of another component (a moved one, shown where it is
+            // placed) cuts that body: the pick is already in that body's frame, and the
+            // component's own bodies alone would leave nothing to cut.
+            p["participants"] = json!([body]);
+        }
     }
     add_feature(
         s,
@@ -1920,14 +1976,19 @@ fn draft(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 pub(super) fn sketch_id(s: &Session, v: Option<&Value>, cmd: &str, what: &str) -> Result<u64> {
-    let key = match v {
-        Some(Value::Number(n)) => n.to_string(),
-        Some(Value::String(x)) => x.clone(),
-        _ => return Err(bad(cmd, format!("`{what}` must be a sketch id or name"))),
-    };
+    let key = sketch_key(v).ok_or_else(|| bad(cmd, format!("`{what}` must be a sketch id or name")))?;
     match s.doc.find_feature(&key) {
         Some(f) if matches!(f.kind, FeatureKind::Sketch { .. }) => Ok(f.id),
         _ => Err(bad(cmd, format!("no sketch `{key}`"))),
+    }
+}
+
+/// The key [`sketch_id`] and [`feature_sketch`] look a sketch up by: an id (a number) or a name.
+pub(crate) fn sketch_key(v: Option<&Value>) -> Option<String> {
+    match v {
+        Some(Value::Number(n)) => Some(n.to_string()),
+        Some(Value::String(x)) => Some(x.clone()),
+        _ => None,
     }
 }
 

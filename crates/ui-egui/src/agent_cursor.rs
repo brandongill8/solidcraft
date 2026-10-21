@@ -140,6 +140,9 @@ pub struct Job {
     started: f64,
     /// Clicked at the current stop (waiting out the click).
     clicked: bool,
+    /// The command computing ahead off the window thread while the pointer glides (#1989): at
+    /// its last stop the pointer waits for it, then the command runs and finds it in the cache.
+    ahead: Option<crate::control_job::Ahead>,
 }
 
 /// The pointer's state.
@@ -157,6 +160,19 @@ impl AgentCursor {
     /// A request is being acted out (later requests wait behind it).
     pub fn busy(&self) -> bool {
         self.job.is_some()
+    }
+
+    /// Since when the pointer has waited at its last stop for its command to compute (ms), and
+    /// the command.
+    pub fn computing(&self) -> Option<(f64, &str)> {
+        self.job.as_ref().filter(|j| j.stops.is_empty()).and_then(|j| j.ahead.as_ref()).map(|a| (a.started, a.label.as_str()))
+    }
+
+    /// Stop the request the pointer waits on: answered as stopped, nothing of it applied.
+    pub(crate) fn stop(&mut self) -> Option<(Sender<ControlResponse>, String)> {
+        self.computing()?;
+        let job = self.job.take()?;
+        Some((job.reply, job.ahead.map(|a| a.label).unwrap_or_default()))
     }
 }
 
@@ -324,6 +340,8 @@ pub fn intercept(app: &mut SolveApp, method: &str, params: &Value, reply: &Sende
         return false;
     }
     let from = app.cursor_start();
+    // Computed ahead (a command or a batch's steps) while the pointer glides (#1989).
+    let ahead = crate::control_job::Ahead::begin(app, method, params);
     let (glide, click) = leg_times(s.speed, stops.len());
     app.agent.job = Some(Job {
         method: method.to_string(),
@@ -335,6 +353,7 @@ pub fn intercept(app: &mut SolveApp, method: &str, params: &Value, reply: &Sende
         from,
         started: app.now,
         clicked: false,
+        ahead,
     });
     true
 }
@@ -362,7 +381,9 @@ pub fn step(app: &mut SolveApp, ctx: &egui::Context) {
     let (glide, click) = (job.glide, job.click);
     ctx.request_repaint();
     let Some(&to) = job.stops.front() else {
-        finish(app, ctx);
+        if job.ahead.as_ref().is_none_or(crate::control_job::Ahead::finished) {
+            finish(app, ctx);
+        }
         return;
     };
     let t = if glide > 0.0 { (now - job.started) / glide } else { 1.0 };
@@ -381,7 +402,7 @@ pub fn step(app: &mut SolveApp, ctx: &egui::Context) {
         job.from = to;
         job.started = now;
         job.clicked = false;
-        if job.stops.is_empty() {
+        if job.stops.is_empty() && job.ahead.as_ref().is_none_or(crate::control_job::Ahead::finished) {
             finish(app, ctx);
         }
     }
@@ -399,10 +420,11 @@ fn finish(app: &mut SolveApp, ctx: &egui::Context) {
         app.agent.saved_view = Some(app.cam);
     }
     let (req, _rx) = crate::control::ControlRequest::new(job.method, params);
-    let out = match crate::control::handle(app, ctx, &req) {
+    // What was computed ahead while the pointer glided is found rather than computed again here.
+    let out = app.run_with_kept(job.ahead.map(|a| a.kept), |app| match crate::control::handle(app, ctx, &req) {
         crate::control::Outcome::Done(v) => v,
         crate::control::Outcome::Screenshot { .. } => json!({"ok": false, "error": "not a command"}),
-    };
+    });
     let ran = out.get("ok").and_then(Value::as_bool).unwrap_or(false);
     if follow && ran {
         if id == "sketch.create" {

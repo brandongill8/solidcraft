@@ -170,9 +170,19 @@ pub struct Snapshot {
 pub struct Ahead(Session);
 
 impl Ahead {
-    /// Run `commands` (their results stay in the shared evaluation cache).
+    /// What the evaluation computes, kept for the run that follows here whatever the evaluation
+    /// cache drops meanwhile: hand it to [`solidcraft_doc::Model::keep`] for that run.
+    pub fn kept(&self) -> Arc<solidcraft_doc::KeptResults> {
+        self.0.model.kept().unwrap_or_default()
+    }
+
+    /// Run `commands` (their results stay in the shared evaluation cache, and in [`Ahead::kept`]),
+    /// then make the display meshes and plans of the bodies they end with: the bodies the run
+    /// here finds share them, so the window draws, fits and picks without tessellating anything.
     pub fn evaluate(self, commands: &[(String, Value)]) -> Result<()> {
-        self.0.preview_in_place(commands).map(|_| ())
+        let (s, _) = self.0.preview_in_place(commands)?;
+        s.world_state().warm_display();
+        Ok(())
     }
 
     /// Run `commands` one after another, each reply or error in turn (what they evaluate stays
@@ -1030,6 +1040,7 @@ impl Session {
         let mut copy = self.scratch();
         copy.undo.clone_from(&self.undo);
         copy.redo.clone_from(&self.redo);
+        copy.model.keep(Some(Arc::default()));
         Ahead(copy)
     }
 

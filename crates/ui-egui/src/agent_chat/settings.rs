@@ -110,6 +110,10 @@ pub fn page(app: &mut SolveApp, ui: &mut egui::Ui) {
         ui_kit::text(ui, tr("ui.agent_chat_desktop_only"), ui_kit::Text::Note("desktop"));
         return;
     }
+    // Any agent's control requests, the chat's or an outside MCP client's (#1989).
+    let r = ui_kit::checkbox(ui, tr("ui.agent_off_thread"), &mut app.preferences.agent_off_thread);
+    crate::scenario::publish_handle("prefs:agent_off_thread", r.rect.center());
+    ui_kit::text(ui, tr("ui.agent_off_thread_note"), ui_kit::Text::Note("off_thread"));
     if !app.preferences.ai_features {
         return;
     }

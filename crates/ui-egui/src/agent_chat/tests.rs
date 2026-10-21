@@ -1699,3 +1699,20 @@ fn an_attached_picture_and_the_views_picture_share_the_viewer() {
     let Some(Item::User { pictures, .. }) = chat.items.last() else { panic!("a sent message") };
     assert_eq!(pictures.len(), 2);
 }
+
+/// Settings › AI › Add agent opens its dialog from the Home tab too (#3483, #3513).
+#[test]
+fn add_agent_opens_its_dialog_from_home() {
+    use crate::scenario::handle_at;
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.call("ui.home", json!({"open": true}));
+    h.call("ui.prefs", json!({"open": "AI"}));
+    h.frames(4);
+    assert!(h.app.home.open, "Home is showing");
+    let add = handle_at("prefs:ai_add").expect("Add agent is drawn");
+    h.call("ui.click", json!({"x": add.x, "y": add.y}));
+    h.frames(4);
+    assert!(h.app.agent_chat.settings.add.is_some(), "Add agent opened its dialog");
+    assert!(handle_at("ai_add:add").is_some(), "the dialog is drawn over Home");
+}

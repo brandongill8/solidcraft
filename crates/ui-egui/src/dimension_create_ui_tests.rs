@@ -745,3 +745,73 @@ fn type_first_keeps_the_place_first_flow() {
     assert!((new[0].kind.value().unwrap() - 21.).abs() < 1e-6);
     crate::dim_view::cancel();
 }
+
+/// Type-first, the text follows the pointer: moving it from across the picks (the distance
+/// between them) to above or beside them switches to the horizontal or vertical distance and
+/// back. Until something is typed the value follows the dimension, so the preview measures the
+/// picked points where they are (it neither moves nor scales them) and Enter keeps them there.
+#[test]
+fn type_first_switching_between_aligned_horizontal_and_vertical_keeps_the_picked_points() {
+    use solidcraft_engine::sketch::ConstraintKind as K;
+    let end = [12., 16.];
+    let mid = [6., 8.];
+    // Across from the picks, above them, beside them.
+    let (across, above, beside) = ([-5., 12.], [6., 25.], [-10., 1.]);
+    type Kind = fn(&K) -> bool;
+    let aligned: Kind = |k| matches!(k, K::Distance { .. } | K::Length { .. });
+    let horizontal: Kind = |k| matches!(k, K::DistanceX { .. });
+    let vertical: Kind = |k| matches!(k, K::DistanceY { .. });
+    let picks: [Vec<[f64; 2]>; 2] = [vec![[0., 0.], end], vec![mid]];
+    for picks in picks {
+        for (commit_at, commit_kind, commit_value) in [(above, horizontal, 12.), (beside, vertical, 16.), (across, aligned, 20.)] {
+            let mut h = sketch_with(&[("sketch.line", json!({"points":[[0,0],end],"infer":false}))], mid);
+            let undo = h.app.session.undo.len();
+            for p in &picks {
+                h.step(&json!({"click":{"world":[p[0],p[1],0]}})).unwrap();
+            }
+            assert_live(&h);
+            for (at, kind, value) in [
+                (across, aligned, 20.),
+                (above, horizontal, 12.),
+                (across, aligned, 20.),
+                (beside, vertical, 16.),
+                (commit_at, commit_kind, commit_value),
+            ] {
+                h.step(&json!({"move":{"world":[at[0],at[1],0]}})).unwrap();
+                h.settle();
+                let (expr, c, sk) = crate::dim_view::draft_preview().expect("the draft is open");
+                let ctx = format!("{picks:?} at {at:?}: {expr} {:?}", c.kind);
+                assert!(kind(&c.kind), "{ctx}");
+                assert!((c.kind.value().unwrap() - value).abs() < 1e-6, "{ctx}");
+                assert_eq!(expr, format!("{value} mm"), "{ctx}");
+                let a = sk.point(sk.resolve_point("l1.start").unwrap()).unwrap();
+                let b = sk.point(sk.resolve_point("l1.end").unwrap()).unwrap();
+                assert!(
+                    a.dist(solidcraft_engine::geom::Vec2::new(0., 0.)) < 1e-6 && b.dist(solidcraft_engine::geom::Vec2::new(end[0], end[1])) < 1e-6,
+                    "{ctx}: the preview moved the points to {a:?} {b:?}"
+                );
+            }
+            h.step(&json!({"key":"Enter"})).unwrap();
+            assert!(!crate::dim_view::editing());
+            assert_eq!(h.app.session.undo.len(), undo + 1);
+            let sk = solved(&h);
+            let a = sk.point(sk.resolve_point("l1.start").unwrap()).unwrap();
+            let b = sk.point(sk.resolve_point("l1.end").unwrap()).unwrap();
+            assert!(
+                a.dist(solidcraft_engine::geom::Vec2::new(0., 0.)) < 1e-6 && b.dist(solidcraft_engine::geom::Vec2::new(end[0], end[1])) < 1e-6,
+                "{picks:?} at {commit_at:?}: {a:?} {b:?}"
+            );
+            let new = added(&h, 0);
+            assert_eq!(new.len(), 1);
+            assert!(commit_kind(&new[0].kind), "{picks:?} at {commit_at:?}: {:?}", new[0].kind);
+            assert!((new[0].kind.value().unwrap() - commit_value).abs() < 1e-6, "{:?}", new[0].kind);
+            // The committed dimension's text is where the pointer left it, and its extension lines
+            // start at the picked points.
+            h.settle();
+            let shown = crate::dim_view::text_at(&new[0].id).expect("the new dimension is drawn");
+            let [x, y] = h.at(&json!({"world":[commit_at[0],commit_at[1],0]})).unwrap();
+            assert!(shown.distance(egui::pos2(x as f32, y as f32)) < 40.0, "{picks:?}: text at {shown:?}, cursor at {x},{y}");
+            crate::dim_view::cancel();
+        }
+    }
+}

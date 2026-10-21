@@ -56,12 +56,14 @@ pub struct ControlRequest {
     pub method: String,
     pub params: Value,
     pub reply: Sender<ControlResponse>,
+    /// Set once the window starts on it; until then it waits its turn (`control.running`, #3654).
+    pub started: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl ControlRequest {
     pub fn new(method: impl Into<String>, params: Value) -> (Self, std::sync::mpsc::Receiver<ControlResponse>) {
         let (tx, rx) = std::sync::mpsc::channel();
-        (Self { method: method.into(), params, reply: tx }, rx)
+        (Self { method: method.into(), params, reply: tx, started: Default::default() }, rx)
     }
 }
 
