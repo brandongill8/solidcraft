@@ -240,7 +240,9 @@ You can also start the constraint first and then pick its curves. An incomplete 
 selection leaves the tool ready for ordinary picking.
 
 Coincident accepts an exact selection of two points or a point and a curve. Midpoint
-accepts one point and one line, in either selection order. Symmetry accepts two distinct
+accepts one point and one line, in either selection order, or two lines: the second line
+moves (keeping its length) until its midpoint sits on the first line's midpoint,
+and stays centred there as either line changes. Symmetry accepts two distinct
 points and one symmetry line, regardless of where the line occurs in the selection.
 Successful constraints clear the selection; rejected constraints preserve it.
 

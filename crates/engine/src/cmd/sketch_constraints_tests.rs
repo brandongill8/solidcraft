@@ -632,3 +632,106 @@ fn midpoint_alignment_remaps_after_unrelated_geometry_is_deleted() {
     run(&mut s, "sketch.delete", json!({"entities":[result["created"]["points"][0]]}));
     assert!(sketch(&s).constraints.is_empty());
 }
+
+fn line_ends(sk: &solidcraft_sketch::Sketch, id: &str) -> (Vec2, Vec2) {
+    let solidcraft_sketch::CurveKind::Line { a, b } = sk.curves[sk.curve_index(id).unwrap()].kind else { panic!("expected line") };
+    (sk.point(a).unwrap(), sk.point(b).unwrap())
+}
+
+#[test]
+fn midpoint_of_two_lines_centres_the_second_on_the_first() {
+    use solidcraft_sketch::ConstraintKind;
+    for reverse in [false, true] {
+        let mut s = new_sketch();
+        run(&mut s, "sketch.line", json!({"points":[[0,0],[60,0]],"infer":false,"connect":false}));
+        run(&mut s, "sketch.line", json!({"points":[[5,-10],[25,-10]],"infer":false,"connect":false}));
+        let (first, second) = if reverse { ("l2", "l1") } else { ("l1", "l2") };
+        let stays = line_ends(&sketch(&s), first);
+        let length = {
+            let (a, b) = line_ends(&sketch(&s), second);
+            a.dist(b)
+        };
+        let before = s.doc.to_json();
+        let undo = s.undo.len();
+        let result = run(&mut s, "sketch.constraint.midpoint", json!({"a":first,"b":second}));
+        assert_eq!(result["created"]["points"].as_array().unwrap().len(), 1);
+        assert_eq!(result["created"]["constraints"].as_array().unwrap().len(), 2);
+        assert_eq!(s.undo.len(), undo + 1);
+        let sk = sketch(&s);
+        assert_eq!(line_ends(&sk, first), stays, "the first pick stays put");
+        let (a, b) = line_ends(&sk, second);
+        assert!((a.dist(b) - length).abs() < 1e-6, "the second keeps its length");
+        assert!(line_midpoint(&sk, first).dist(line_midpoint(&sk, second)) < 1e-6);
+        assert_eq!(sk.constraints.iter().filter(|c| matches!(c.kind, ConstraintKind::Midpoint { .. })).count(), 2);
+
+        // Saved as ordinary points and constraints: it reopens and keeps holding.
+        let after = s.doc.to_json();
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(s.doc.to_json(), before);
+        run(&mut s, "edit.redo", json!({}));
+        assert_eq!(s.doc.to_json(), after);
+        let mut reopened = Session::new(solidcraft_doc::Document::from_json(&after).unwrap());
+        reopened.active_sketch = s.active_sketch;
+        run(&mut reopened, "sketch.move_point", json!({"point":"l1.end","to":[80,15]}));
+        let sk = sketch(&reopened);
+        assert!(line_midpoint(&sk, "l1").dist(line_midpoint(&sk, "l2")) < 1e-6);
+    }
+}
+
+#[test]
+fn midpoint_takes_a_point_and_a_line_in_either_pick_order() {
+    for (a, b) in [("p", "l1"), ("l1", "p")] {
+        let mut s = new_sketch();
+        run(&mut s, "sketch.line", json!({"points":[[0,0],[40,0]],"infer":false,"connect":false}));
+        run(&mut s, "sketch.point", json!({"point":[7,9],"id":"p"}));
+        run(&mut s, "sketch.constraint.midpoint", json!({"a":a,"b":b}));
+        let sk = sketch(&s);
+        let p = sk.point(sk.resolve_point("p").unwrap()).unwrap();
+        assert!(p.dist(line_midpoint(&sk, "l1")) < 1e-6, "{a} then {b}");
+    }
+}
+
+#[test]
+fn midpoint_of_two_lines_reuses_an_existing_midpoint() {
+    use solidcraft_sketch::ConstraintKind;
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points":[[0,0],[60,0]],"infer":false,"connect":false}));
+    run(&mut s, "sketch.line", json!({"points":[[5,-10],[25,-10]],"infer":false,"connect":false}));
+    // l3 starts at the midpoint of l2: that point is reused, not duplicated.
+    run(&mut s, "sketch.line", json!({"points":["mid:l2",[15,-30]],"infer":false,"connect":false}));
+    let count = sketch(&s).points.len();
+    let result = run(&mut s, "sketch.constraint.midpoint", json!({"a":"l1","b":"l2"}));
+    assert!(result["created"]["points"].as_array().unwrap().is_empty());
+    let sk = sketch(&s);
+    assert_eq!(sk.points.len(), count);
+    assert_eq!(sk.constraints.iter().filter(|c| matches!(c.kind, ConstraintKind::Midpoint { .. })).count(), 2);
+    assert!(line_midpoint(&sk, "l1").dist(line_midpoint(&sk, "l2")) < 1e-6);
+    // Applying it again finds nothing to add.
+    let before = s.doc.to_json();
+    assert!(s.execute("sketch.constraint.midpoint", &json!({"a":"l2","b":"l1"})).is_err());
+    assert_eq!(s.doc.to_json(), before);
+}
+
+#[test]
+fn midpoint_rejects_wrong_picks_without_changing_the_sketch() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points":[[0,0],[60,0]],"infer":false,"connect":false}));
+    run(&mut s, "sketch.circle.center", json!({"center":[40,50],"radius":3}));
+    run(&mut s, "sketch.point", json!({"point":[7,9],"id":"p"}));
+    for params in [
+        json!({"a":"l1","b":"l1"}),
+        json!({"a":"l1","b":"c1"}),
+        json!({"a":"c1","b":"l1"}),
+        json!({"a":"p","b":"origin"}),
+        json!({"a":"p","b":"c1"}),
+        json!({"a":"l1","b":"missing"}),
+        json!({"a":"l1"}),
+        json!({"a":12,"b":"l1"}),
+    ] {
+        let before = s.doc.to_json();
+        let undo = s.undo.len();
+        assert!(s.execute("sketch.constraint.midpoint", &params).is_err(), "{params}");
+        assert_eq!(s.doc.to_json(), before, "{params}");
+        assert_eq!(s.undo.len(), undo, "{params}");
+    }
+}

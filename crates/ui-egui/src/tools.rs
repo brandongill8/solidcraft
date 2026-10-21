@@ -150,6 +150,7 @@ pub fn hint(id: &str) -> String {
         "sketch.dimension" => "Dimension: pick one or two entities and type the value (or click to place it first); Enter applies".into(),
         "sketch.constraint.horizontal_vertical" => "Horizontal/Vertical: pick a line or two points; hold Shift to pick a line midpoint".into(),
         "sketch.slot.center_to_center" | "sketch.slot.overall" => "Slot: click both ends, then the width".into(),
+        "sketch.constraint.midpoint" => "MidPoint: pick a point and a line, or two lines to centre the second on the first".into(),
         _ if id.starts_with("sketch.constraint.") => "Constraint: pick the sketch entities".into(),
         _ => crate::sketch_tools::hint(id).unwrap_or_else(|| "Click in the sketch".into()),
     }
@@ -494,6 +495,7 @@ pub(crate) fn constraint_preselection(command: &str, selection: &[solidcraft_eng
             "sketch.constraint.midpoint",
             [SketchPoint { id: point }, SketchCurve { id: line }] | [SketchCurve { id: line }, SketchPoint { id: point }],
         ) => Some(json!({"point":point,"line":line})),
+        ("sketch.constraint.midpoint", [SketchCurve { id: a }, SketchCurve { id: b }]) if a != b => Some(json!({"a":a,"b":b})),
         ("sketch.constraint.symmetry", [a, b, c]) => {
             let mut points = Vec::new();
             let mut lines = Vec::new();
@@ -567,7 +569,8 @@ fn run_pick(app: &mut SolveApp, t: &Tool) {
     let params = match t.cmd {
         "sketch.constraint.fix" => json!({"entity": k[0]}),
         "sketch.constraint.coincident" => json!({"a": k[0], "b": k[1]}),
-        "sketch.constraint.midpoint" => json!({"point": k[0], "line": k[1]}),
+        // In pick order: a point and a line either way round, or two lines to centre.
+        "sketch.constraint.midpoint" => json!({"a": k[0], "b": k[1]}),
         "sketch.constraint.symmetry" => json!({"a": k[0], "b": k[1], "line": k[2]}),
         _ => json!({"a": k[0], "b": k[1]}),
     };

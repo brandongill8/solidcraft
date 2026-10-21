@@ -926,7 +926,8 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         c.push(cmd(app, "sketch.constraint.parallel", "Parallel").with(ab.clone()));
         c.push(cmd(app, "sketch.constraint.perpendicular", "Perpendicular").with(ab.clone()));
         c.push(cmd(app, "sketch.constraint.collinear", "Collinear").with(ab.clone()));
-        c.push(cmd(app, "sketch.constraint.equal", "Equal").with(ab));
+        c.push(cmd(app, "sketch.constraint.equal", "Equal").with(ab.clone()));
+        c.push(cmd(app, "sketch.constraint.midpoint", "MidPoint").with(ab));
     }
     if r == 2 && n == 2 {
         let ab = json!({ "a": rounds[0], "b": rounds[1] });

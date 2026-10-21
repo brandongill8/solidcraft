@@ -156,7 +156,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_midpoint")
         .enabled(in_sketch)
-        .params("point, line"),
+        .params("point, line | a, b in pick order: a point and a line (either way round), or two lines whose midpoints meet (the first stays, the second moves)"),
     CommandSpec::new("sketch.constraint.concentric", "Concentric", c_concentric)
         .at("SKETCH", "CONSTRAINTS")
         .icon("c_concentric")
@@ -1637,6 +1637,15 @@ pub(super) fn residual_of(sk: &Sketch, id: &str) -> Option<f64> {
     sk.constraints.iter().position(|c| c.id == id).and_then(|ci| solidcraft_sketch::constraint_residual(sk, ci))
 }
 
+/// The point already tied to the middle of line `l`, including one created by drawing.
+/// Coincident coordinates alone are not enough: the Midpoint relationship must exist.
+fn existing_midpoint(sk: &Sketch, l: usize) -> Option<usize> {
+    sk.constraints.iter().find_map(|c| match c.kind {
+        ConstraintKind::Midpoint { p, l: line } if line == l && !c.driven => Some(p),
+        _ => None,
+    })
+}
+
 /// Temporary pick intent. Saved sketches use ordinary points and constraints only.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AlignmentTarget {
@@ -1645,19 +1654,13 @@ enum AlignmentTarget {
 }
 
 impl AlignmentTarget {
-    fn materialize(self, sk: &mut Sketch) -> Result<usize> {
+    fn materialize(self, sk: &mut Sketch, cmd: &str) -> Result<usize> {
         match self {
             Self::Point(p) => Ok(p),
             Self::Midpoint(l) => {
-                // Reuse an existing associative midpoint, including one created by drawing.
-                // Coincident coordinates alone are insufficient: its relationship must exist.
-                if let Some(p) = sk.constraints.iter().find_map(|c| match c.kind {
-                    ConstraintKind::Midpoint { p, l: line } if line == l && !c.driven => Some(p),
-                    _ => None,
-                }) {
+                if let Some(p) = existing_midpoint(sk, l) {
                     return Ok(p);
                 }
-                let cmd = "sketch.constraint.horizontal_vertical";
                 let (a, b) = line_pts(sk, l).ok_or_else(|| bad(cmd, "a midpoint reference needs a line"))?;
                 let p = sk.add_point((a + b) * 0.5, None)?;
                 add_c(sk, ConstraintKind::Midpoint { p, l })?;
@@ -1693,8 +1696,8 @@ fn c_horizontal_vertical(s: &mut Session, p: &Value) -> Result<Value> {
             if a == b {
                 return Err(bad(cmd, "alignment needs two distinct point references"));
             }
-            let a = a.materialize(sk)?;
-            let b = b.materialize(sk)?;
+            let a = a.materialize(sk, cmd)?;
+            let b = b.materialize(sk, cmd)?;
             if a == b {
                 return Err(bad(cmd, "alignment needs two distinct points"));
             }
@@ -1826,9 +1829,46 @@ fn c_collinear(s: &mut Session, p: &Value) -> Result<Value> {
 fn c_midpoint(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.constraint.midpoint";
     constrain(s, p, cmd, |sk| {
-        Ok(ConstraintKind::Midpoint { p: point_ref(sk, p.get("point"), cmd, "point")?, l: curve_ref(sk, p.get("line"), cmd, "line")? })
+        if p.get("a").is_none() && p.get("b").is_none() {
+            return Ok(ConstraintKind::Midpoint { p: point_ref(sk, p.get("point"), cmd, "point")?, l: curve_ref(sk, p.get("line"), cmd, "line")? });
+        }
+        // `a` and `b` in pick order: a point and a line either way round, or two lines.
+        let entity = |k: &str| -> Result<Ent> {
+            let r = p.get(k).and_then(Value::as_str).ok_or_else(|| bad(cmd, format!("`{k}` must be a point or line id")))?;
+            match sk.resolve_point(r) {
+                Some(i) => Ok(Ent::Point(i)),
+                None => sk.curve_index(r).map(Ent::Curve).ok_or_else(|| bad(cmd, format!("unknown sketch point or curve `{r}`"))),
+            }
+        };
+        let is_line = |sk: &Sketch, c: usize| matches!(sk.curves.get(c).map(|c| &c.kind), Some(CurveKind::Line { .. }));
+        match (entity("a")?, entity("b")?) {
+            (Ent::Point(q), Ent::Curve(l)) | (Ent::Curve(l), Ent::Point(q)) if is_line(sk, l) => Ok(ConstraintKind::Midpoint { p: q, l }),
+            // Two lines: their midpoints meet. One point sits at the middle of both, reusing
+            // a midpoint either line already has, so nothing new is saved in the design.
+            (Ent::Curve(a), Ent::Curve(b)) if is_line(sk, a) && is_line(sk, b) => {
+                if a == b {
+                    return Err(bad(cmd, "pick two different lines"));
+                }
+                let (q, l) = match (existing_midpoint(sk, a), existing_midpoint(sk, b)) {
+                    (Some(q), _) => (q, b),
+                    (None, Some(q)) => (q, a),
+                    (None, None) => (AlignmentTarget::Midpoint(a).materialize(sk, cmd)?, b),
+                };
+                if existing_midpoint_of(sk, q, l) {
+                    return Err(bad(cmd, "these lines already share their midpoint"));
+                }
+                Ok(ConstraintKind::Midpoint { p: q, l })
+            }
+            _ => Err(bad(cmd, "MidPoint needs a point and a line, or two lines")),
+        }
     })
 }
+
+/// Point `q` is already tied to the middle of line `l`.
+fn existing_midpoint_of(sk: &Sketch, q: usize, l: usize) -> bool {
+    sk.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::Midpoint { p, l: line } if p == q && line == l) && !c.driven)
+}
+
 /// The centre of a symmetry about a point (#1075): `point`, or `line` naming a point rather than
 /// a curve or a sketch axis (the origin picked as the third entity).
 fn symmetry_center(sk: &Sketch, p: &Value, cmd: &str) -> Result<Option<usize>> {
