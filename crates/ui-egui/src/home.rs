@@ -47,9 +47,29 @@ pub struct HomeState {
     remembering: Option<std::sync::mpsc::Receiver<Made>>,
     /// A sample picked before its design was ready.
     wanted: Option<usize>,
+    /// Whether each recent file is there, found off the window thread (a stat of a slow or
+    /// disconnected drive must not hold up the page); unknown counts as there.
+    present: HashMap<String, bool>,
+    #[cfg(not(target_arch = "wasm32"))]
+    present_asked: std::collections::HashSet<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    present_rx: Vec<std::sync::mpsc::Receiver<(String, bool)>>,
 }
 
 impl HomeState {
+    /// Wait for the background check of the recent files to answer (tests only).
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(crate) fn wait_for_existence_checks(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while self.recent.iter().any(|p| !self.present.contains_key(p)) && std::time::Instant::now() < deadline {
+            for rx in &self.present_rx {
+                while let Ok((p, there)) = rx.try_recv() {
+                    self.present.insert(p, there);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
     pub fn ready_recents(&self) -> usize {
         self.recent.iter().filter(|p| self.thumbs.get(*p).is_some_and(Option::is_some)).count()
     }
@@ -260,6 +280,10 @@ fn make(key: &str) -> Made {
 fn read_pictures(keys: Vec<String>, tx: &std::sync::mpsc::Sender<Made>) -> Option<Vec<String>> {
     let mut cold = Vec::new();
     for key in keys {
+        if let Some(i) = key.strip_prefix("samplepic:").and_then(|i| i.parse::<usize>().ok()) {
+            tx.send((format!("sample:{i}"), sample_picture(i), None)).ok()?;
+            continue;
+        }
         match std::panic::catch_unwind(|| picture(&key)).ok().flatten() {
             Some(img) => tx.send((key, Some(img), None)).ok()?,
             None => cold.push(key),
@@ -377,7 +401,8 @@ fn poll(app: &mut SolveApp, ctx: &egui::Context) {
         ctx.request_repaint();
     }
     for (key, img, session) in done {
-        if session.is_none() && key.starts_with("sample:") && app.home.wanted.is_some_and(|w| key == format!("sample:{w}")) {
+        // A picture sent ahead of the build has no session either; only a build with nothing failed.
+        if session.is_none() && img.is_none() && key.starts_with("sample:") && app.home.wanted.is_some_and(|w| key == format!("sample:{w}")) {
             app.home.wanted = None;
             app.set_status(format!("the sample could not be built ({key})"), true);
         }
@@ -427,7 +452,7 @@ pub fn open_sample(app: &mut SolveApp, i: usize) {
 
 /// Is this recent design there to open: in memory, or something the host can bring back?
 pub fn available(app: &SolveApp, path: &str) -> bool {
-    solidcraft_engine::io::vfs::exists(path) || app.services.can_restore.as_ref().is_some_and(|can| can(path))
+    app.home.present.get(path).copied().unwrap_or(true) || app.services.can_restore.as_ref().is_some_and(|can| can(path))
 }
 
 pub fn open_recent(app: &mut SolveApp, path: &str) {
@@ -443,6 +468,39 @@ pub fn open_recent(app: &mut SolveApp, path: &str) {
     app.open_path_async(path);
 }
 
+/// Find out whether the recent files are there: on a thread, so the page never waits on a drive.
+fn ask_present(h: &mut HomeState, ctx: &egui::Context, recent: &[String]) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let new: Vec<String> = recent.iter().filter(|p| h.present_asked.insert((*p).clone())).cloned().collect();
+        if !new.is_empty() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let ctx = ctx.clone();
+            let spawned = std::thread::Builder::new().name("recent-files".into()).spawn(move || {
+                for p in new {
+                    let there = solidcraft_engine::io::vfs::exists(&p);
+                    if tx.send((p, there)).is_err() {
+                        return;
+                    }
+                    ctx.request_repaint();
+                }
+            });
+            if spawned.is_ok() {
+                h.present_rx.push(rx);
+            }
+        }
+        for rx in &h.present_rx {
+            while let Ok((p, there)) = rx.try_recv() {
+                h.present.insert(p, there);
+            }
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    for p in recent {
+        h.present.insert(p.clone(), solidcraft_engine::io::vfs::exists(p));
+    }
+}
+
 /// The page itself (in place of the toolbar, browser and viewport).
 pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     poll(app, ui.ctx());
@@ -453,12 +511,23 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     for i in 0..samples.len() {
         let key = format!("sample:{i}");
         if !app.home.thumbs.contains_key(&key) {
+            // Decoded on the thumbnail thread where there is one; the card shows its placeholder
+            // until the picture arrives.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                app.home.queued.push(format!("samplepic:{i}"));
+                app.home.thumbs.insert(key, None);
+            }
+            #[cfg(target_arch = "wasm32")]
             install(&mut app.home, ui.ctx(), &key, sample_picture(i));
         }
     }
     let recent = app.home.recent.clone();
-    for p in recent.iter().filter(|p| solidcraft_engine::io::vfs::exists(p)) {
-        want(&mut app.home, p);
+    ask_present(&mut app.home, ui.ctx(), &recent);
+    for p in &recent {
+        if app.home.present.get(p).copied().unwrap_or(true) {
+            want(&mut app.home, p);
+        }
     }
     let mut action: Option<Box<dyn FnOnce(&mut SolveApp)>> = None;
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(36, 24))).show(ui, |ui| {
@@ -717,6 +786,9 @@ mod tests {
         h.app.services.can_restore = Some(Box::new(|p| p.starts_with("/disk/known/")));
         h.app.services.restore_file = Some(Box::new(move |p| sink.borrow_mut().push(p.to_string())));
         assert!(available(&h.app, "/disk/known/Bracket.solidcraft"));
+        // A file is taken to be there until the background check says it is not.
+        assert!(available(&h.app, "/disk/other/Bracket.solidcraft"));
+        h.app.home.present.insert("/disk/other/Bracket.solidcraft".into(), false);
         assert!(!available(&h.app, "/disk/other/Bracket.solidcraft"));
         open_recent(&mut h.app, "/disk/known/Bracket.solidcraft");
         assert_eq!(*asked.borrow(), ["/disk/known/Bracket.solidcraft"]);
@@ -870,15 +942,18 @@ mod tests {
     }
 
     #[test]
-    fn first_home_frame_shows_all_samples_without_building_any_models() {
+    fn first_home_frame_shows_placeholders_and_the_sample_pictures_arrive_without_building_any_model() {
         let mut h = crate::scenario::Harness::new();
         h.app.home.show(0);
         h.frames(1);
+        assert!(h.app.home.ready_samples() < solidcraft_engine::sample::samples().len(), "the first frame decodes nothing");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while h.app.home.ready_samples() < solidcraft_engine::sample::samples().len() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.frames(1);
+        }
         assert_eq!(h.app.home.ready_samples(), solidcraft_engine::sample::samples().len());
-        assert!(h.app.home.samples.is_empty());
-        assert!(h.app.home.queued.is_empty());
-        #[cfg(not(target_arch = "wasm32"))]
-        assert!(h.app.home.sample_rx.is_none() && h.app.home.rx.is_none());
+        assert!(h.app.home.samples.is_empty(), "no sample model was built");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -348,7 +348,9 @@ pub(crate) struct PopupOption<'a> {
     pub color: egui::Color32,
 }
 
-/// Focus-neutral suggestion popup. The owner handles navigation and completion semantics.
+/// Focus-neutral suggestion popup. The owner handles navigation and completion semantics. Its
+/// rows take no focus, and where they were drawn is kept under `id.with("rows")`, so an owner
+/// can act on a press before the click lands (#3257).
 /// Tokens: space_2, form_label_width, control_height, text_dim, scope control/font tokens.
 pub(crate) fn popup_list(
     ctx: &egui::Context,
@@ -360,6 +362,7 @@ pub(crate) fn popup_list(
 ) -> Option<usize> {
     let t = crate::theme::Tokens::get();
     let mut chosen = None;
+    let mut rows = Vec::with_capacity(options.len());
     let area = crate::frame::area(id).order(egui::Order::Tooltip).fixed_pos(anchor.left_bottom() + egui::vec2(0.0, t.space_2)).show(ctx, |ui| {
         egui::Frame::popup(ui.style())
             .fill(t.control_fill)
@@ -370,7 +373,8 @@ pub(crate) fn popup_list(
                 super::scope(ui, |ui| {
                     ui.set_width(anchor.width().max(t.form_card_width - t.space_16 * 2.0 - t.space_2));
                     for (index, option) in options.iter().enumerate() {
-                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), t.control_height), egui::Sense::click());
+                        let (rect, response) = ui.allocate_exact_size(vec2(ui.available_width(), t.control_height), egui::Sense::CLICK);
+                        rows.push(rect);
                         let picked = index == selected;
                         if picked || response.hovered() {
                             ui.painter().rect_filled(rect, t.control_radius, if picked { t.selected_bg } else { t.hover });
@@ -413,6 +417,7 @@ pub(crate) fn popup_list(
             });
     });
     crate::scenario::publish_rect("dialog:suggestions", area.response.rect);
+    ctx.data_mut(|d| d.insert_temp(id.with("rows"), rows));
     chosen
 }
 

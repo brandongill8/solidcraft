@@ -386,11 +386,13 @@ pub struct HoleOpts {
     /// Tap type: tapped (a cosmetic thread) instead of simple.
     pub tapped: bool,
     pub thread: String,
+    /// Custom nominal diameter and pitch being edited, separate from the saved designation.
+    pub custom_thread: Option<crate::dialogs_thread::HoleThreadDraft>,
 }
 
 impl Default for HoleOpts {
     fn default() -> Self {
-        HoleOpts { multiple: false, all: false, angled: true, tip_angle: "118 deg".into(), tapped: false, thread: "M5".into() }
+        HoleOpts { multiple: false, all: false, angled: true, tip_angle: "118 deg".into(), tapped: false, thread: "M5".into(), custom_thread: None }
     }
 }
 
@@ -627,8 +629,8 @@ impl Dialog {
                 Kind::Align { flip: false },
                 vec![
                     SelInput::new("Bodies", BODIES, true),
-                    SelInput::new("From", FACES | EDGES | selection::VERTICES, false),
-                    SelInput::new("To", FACES | EDGES | selection::VERTICES, false),
+                    SelInput::new("From", FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN, false),
+                    SelInput::new("To", FACES | EDGES | selection::VERTICES | PLANES | selection::ORIGIN, false),
                 ],
             ),
             "solid.remove" => Dialog::new(Kind::Remove, vec![SelInput::new("Bodies", BODIES, true)]),
@@ -851,7 +853,9 @@ impl Dialog {
         }
         *of = picks.to_vec();
         *suggested = picks.first().and_then(|sel| match sel {
-            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread(&s.world_state(), *point).ok(),
+            Sel::Face { point, .. } => solidcraft_engine::doc::suggested_thread(&s.world_state(), *point).ok().map(|value| {
+                solidcraft_engine::doc::parse_metric_thread(&value).map(|(d, p)| crate::dialogs_thread::designation(d, p)).unwrap_or(value)
+            }),
             _ => None,
         });
         *designation = suggested.clone().unwrap_or_default();
@@ -949,7 +953,12 @@ impl Dialog {
             }
             Kind::Shell { thickness } => ("Thickness", ValueKind::Length, thickness),
             Kind::Draft { angle } => ("Angle", ValueKind::Angle, angle),
-            Kind::Hole { diameter, .. } => ("Diameter", ValueKind::Length, diameter),
+            Kind::Hole { diameter, opts, .. } => {
+                if opts.tapped {
+                    return None;
+                }
+                ("Diameter", ValueKind::Length, diameter)
+            }
             // A move's main value follows its type: a distance along X for the ones that
             // translate, the angle for Rotate. Point to Point is two picks with nothing to type.
             Kind::Move { mode, x, angle, .. } => match *mode {
@@ -2780,9 +2789,8 @@ pub fn start_sketch(app: &mut SolveApp, sel: &Sel) -> Result<(), String> {
     look_at_sketch(app);
     // On a face: look at the picked point, not the plane's origin (a corner of the face),
     // which left the face filling the view off-centre like a big square.
-    if let Sel::Face { point, .. } = sel
-        && let Some(mut to) = app.cam_anim.as_ref().map(|a| a.to)
-    {
+    if let Sel::Face { point, .. } = sel {
+        let mut to = app.cam;
         to.target = *point;
         app.animate_to(to);
     }
@@ -3445,8 +3453,12 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     }
                     (Some(Sel::Face { point, .. }), _) => p[format!("{key}_face")] = pt(*point),
                     (Some(Sel::Edge { point, .. }), _) => p[key] = json!({"snap": "edge_mid", "at": pt(*point)}),
+                    // The origin point (a vertex of no body) stays the origin.
+                    (Some(Sel::Vertex { body, .. }), _) if body.is_empty() => p[key] = json!("origin"),
                     (Some(Sel::Vertex { point, .. }), _) => p[key] = pt(*point),
-                    _ => return Err("pick faces, edges or vertices".into()),
+                    // A plane stays a plane, so the bodies follow it when it moves.
+                    (Some(Sel::Plane { name }), _) => p[format!("{key}_plane")] = json!(name),
+                    _ => return Err("pick faces, edges, vertices or planes".into()),
                 }
             }
             ("solid.align", p)
@@ -3604,7 +3616,9 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             let mut out = Vec::new();
             for place in places {
                 let mut params = place;
-                params["diameter"] = json!(diameter);
+                if !opts.tapped {
+                    params["diameter"] = json!(diameter);
+                }
                 params["type"] = json!(ty);
                 if to_object_on(&d.inputs) {
                     params["to"] = to_object_point(&d.inputs).ok_or("select the object to drill to")?;
@@ -3614,7 +3628,11 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                 if ty == "drilled" {
                     params["tip_angle"] = json!(opts.tip_angle);
                 }
-                if opts.tapped && !opts.thread.trim().is_empty() {
+                if opts.tapped {
+                    if let Some(error) = opts.custom_thread.as_ref().and_then(|draft| draft.error.as_ref()) {
+                        return Err(error.clone());
+                    }
+                    solidcraft_engine::doc::parse_metric_thread(&opts.thread).ok_or("select a valid metric thread size")?;
                     params["thread"] = json!(opts.thread.trim());
                 }
                 match *kind {

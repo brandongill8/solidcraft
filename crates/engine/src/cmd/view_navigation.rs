@@ -7,6 +7,8 @@ use crate::params::{bad, num, req_vec2, req_vec3, vec3};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
+CommandSpec::new("view.history_layout", "History layout", history_layout)
+    .icon("settings").noundo().doc_only().params("width?: 1..1000000; dock?: bottom|left|under_browser; collapsed?: bool → validated layout request; display only, never opens a dialog"),
 CommandSpec::new("view.graphics_preset", "Graphics Preset", graphics_preset)
     .icon("settings").noundo().doc_only().params("preset: performance|quality → preset, enabled, display_quality, supersampling, supersampling_adaptive; Quality: AO, Fine, adaptive 2x SSAA; Performance: no AO, Normal, no SSAA"),
 CommandSpec::new("view.ambient_occlusion", "Ambient Occlusion", ambient_occlusion)
@@ -16,6 +18,30 @@ CommandSpec::new("view.navigate", "Navigate View", navigate)
     .noundo()
     .doc_only()
     .params("camera: Camera; direction?: [x,y,z] in the camera's up-axis frame; or action: left|right|up|down|clockwise|counterclockwise|home|fit, degrees?: 0..180 (how far left|right|up|down turn; default 90); or motion: pan|orbit|zoom, delta?: [dx,dy] (pixels, each ±10000), viewport?: [width,height] (1..1000000, required for pan or pivot), pivot?: [x,y,z], factor?: 0.05..20 (required for zoom), anchor?: [x,y,z] → camera, fit, continuous?")];
+
+fn history_layout(_s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "view.history_layout";
+    let mut result = serde_json::Map::new();
+    if let Some(value) = p.get("width") {
+        let width = value
+            .as_f64()
+            .filter(|v| v.is_finite() && (1.0..=1_000_000.0).contains(v))
+            .ok_or_else(|| bad(cmd, "width must be finite and within 1..1000000"))?;
+        result.insert("width".into(), json!(width));
+    }
+    if let Some(value) = p.get("dock") {
+        let dock = value
+            .as_str()
+            .filter(|v| matches!(*v, "bottom" | "left" | "under_browser"))
+            .ok_or_else(|| bad(cmd, "dock must be bottom, left or under_browser"))?;
+        result.insert("dock".into(), json!(dock));
+    }
+    if let Some(value) = p.get("collapsed") {
+        let collapsed = value.as_bool().ok_or_else(|| bad(cmd, "collapsed must be a boolean"))?;
+        result.insert("collapsed".into(), json!(collapsed));
+    }
+    Ok(Value::Object(result))
+}
 
 fn navigate(_s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "view.navigate";
@@ -348,4 +374,18 @@ mod graphics_preset_tests {
         assert_eq!(s.doc.to_json(), before);
         assert!(s.undo.is_empty());
     }
+}
+
+#[cfg(test)]
+#[test]
+fn history_layout_validates_geometry_without_changing_the_design() {
+    let mut s = Session::default();
+    let doc = s.doc.clone();
+    let request = json!({"width":240.0,"dock":"under_browser","collapsed":true});
+    assert_eq!(s.execute("view.history_layout", &request).unwrap(), request);
+    for p in [json!({"width":-1}), json!({"width":1e20}), json!({"width":"wide"}), json!({"dock":"nowhere"}), json!({"collapsed":42})] {
+        assert!(s.execute("view.history_layout", &p).is_err());
+    }
+    assert_eq!(s.doc, doc);
+    assert!(s.undo.is_empty());
 }

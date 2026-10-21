@@ -575,7 +575,7 @@ fn named_views_save_restore_rename_and_delete() {
     app.cam.set_view(solidcraft_engine::render::StandardView::Top);
     let t = Target::NamedView { name: "Named View1".into() };
     act(&mut app, &t, "Restore");
-    assert_eq!(app.cam_anim.map(|a| a.to), Some(saved), "animates back to the saved camera");
+    assert_eq!(app.cam, saved, "goes back to the saved camera at once");
     act(&mut app, &t, "Rename");
     assert!(context_menu::finish_rename(&mut app, Some("Front detail"), true));
     let t = Target::NamedView { name: "Front detail".into() };
@@ -585,7 +585,7 @@ fn named_views_save_restore_rename_and_delete() {
     let top = context_menu::items(&app, &Target::NamedView { name: "Top".into() });
     assert!(!find(&top, "Delete").enabled);
     context_menu::run_item(&mut app, &find(&top, "Restore"), pos2(0.0, 0.0));
-    assert!(app.cam_anim.is_some());
+    assert_ne!(app.cam, saved);
 }
 
 #[test]

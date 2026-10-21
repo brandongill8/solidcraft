@@ -72,13 +72,6 @@ impl StandardView {
     }
 }
 
-/// Smooth ease-in-out on [0, 1] (smoothstep: at its fastest, mid-way, 1.5 times the average
-/// speed, so long turns stay gentle).
-pub fn ease_in_out(t: f64) -> f64 {
-    let t = if t.is_finite() { t.clamp(0.0, 1.0) } else { 1.0 };
-    t * t * (3.0 - 2.0 * t)
-}
-
 /// A unit quaternion (w, x, y, z).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Quat {
@@ -148,36 +141,6 @@ impl Quat {
             Vec3::new(2.0 * (x * y - w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + w * x)),
             Vec3::new(2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)),
         )
-    }
-}
-
-/// A camera move in progress: from one camera to another over `duration` seconds.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CameraAnim {
-    pub from: Camera,
-    pub to: Camera,
-    pub start: f64,
-    pub duration: f64,
-}
-
-impl CameraAnim {
-    /// The usual length of a view change, in seconds.
-    pub const DURATION: f64 = 0.5;
-    /// A view change: half a second, longer for turns past a quarter turn (so a big turn, such
-    /// as from the home view to the bottom, never sweeps more than about 9 degrees a frame).
-    pub fn new(from: Camera, to: Camera, now: f64) -> CameraAnim {
-        let dy = (to.yaw - from.yaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-        let turn = dy.abs().max((to.pitch - from.pitch).abs());
-        let k = if turn.is_finite() { (turn / std::f64::consts::FRAC_PI_2).clamp(1.0, 2.0) } else { 1.0 };
-        CameraAnim { from, to, start: now, duration: CameraAnim::DURATION * k }
-    }
-    /// The camera at time `now`, and whether the move has finished.
-    pub fn sample(&self, now: f64) -> (Camera, bool) {
-        let t = if self.duration > 0.0 { (now - self.start) / self.duration } else { 1.0 };
-        if !(t < 1.0) {
-            return (self.to, true);
-        }
-        (Camera::interpolate(&self.from, &self.to, ease_in_out(t)), false)
     }
 }
 
@@ -517,29 +480,13 @@ mod tests {
     }
 
     #[test]
-    fn view_animation_interpolates() {
+    fn orientation_round_trips_and_looks_from_a_corner() {
         let mut a = Camera { target: Vec3::new(1.0, 2.0, 3.0), distance: 80.0, ..Default::default() };
         a.set_view(StandardView::Iso);
-        let mut b = Camera { target: Vec3::new(-5.0, 0.0, 10.0), distance: 120.0, ..Default::default() };
-        b.set_view(StandardView::Top);
-        let anim = CameraAnim::new(a, b, 10.0);
-        // Endpoints are exact.
-        assert_eq!(anim.sample(10.0).0, a);
-        assert_eq!(anim.sample(10.0 + anim.duration), (b, true));
-        assert_eq!(anim.sample(99.0), (b, true));
-        // Midpoint: half way in heading, elevation, target and distance.
-        let (m, done) = anim.sample(10.0 + anim.duration / 2.0);
-        assert!(!done && m.is_valid());
-        let dy = (b.yaw - a.yaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-        assert!((m.yaw - (a.yaw + dy / 2.0)).abs() < 1e-12 && (m.pitch - (a.pitch + b.pitch) / 2.0).abs() < 1e-12);
-        assert!(m.target.dist(Vec3::new(-2.0, 1.0, 6.5)) < 1e-9 && (m.distance - 100.0).abs() < 1e-9);
         // Quaternion round trip of a basis.
         let (r, u, bk) = a.basis();
         let (r2, u2, b2) = a.orientation().basis();
         assert!(r.dist(r2) < 1e-12 && u.dist(u2) < 1e-12 && bk.dist(b2) < 1e-12);
-        // Ease: fixed ends, symmetric, monotonic.
-        assert_eq!((ease_in_out(0.0), ease_in_out(1.0), ease_in_out(0.5)), (0.0, 1.0, 0.5));
-        assert!(ease_in_out(0.25) < 0.25 && ease_in_out(0.75) > 0.75);
         // Looking from a corner direction.
         let c = a.looking_from(Vec3::new(1.0, -1.0, 1.0));
         assert!(c.back().dist(Vec3::new(1.0, -1.0, 1.0).normalized().unwrap()) < 1e-9);
@@ -572,64 +519,6 @@ mod tests {
         assert!(c.is_valid());
         c.fit(&Aabb3::EMPTY);
         assert!(c.is_valid());
-    }
-
-    /// A view change sampled every frame (60 fps) moves smoothly to the very end: no frame
-    /// turns the view, moves the target or changes the distance by much more than the average
-    /// step, and the last frame lands exactly on the target camera.
-    #[test]
-    fn view_animations_have_no_jumps() {
-        let base = Camera { target: Vec3::new(5.0, -3.0, 2.0), distance: 150.0, ..Default::default() };
-        let views = [
-            StandardView::Iso,
-            StandardView::Top,
-            StandardView::Front,
-            StandardView::Right,
-            StandardView::Bottom,
-            StandardView::Back,
-            StandardView::Left,
-        ];
-        let mut cams: Vec<Camera> = views
-            .iter()
-            .map(|v| {
-                let mut c = base;
-                c.set_view(*v);
-                c
-            })
-            .collect();
-        // Corners and edges of the axis view, and a fit (new target and distance).
-        cams.push(base.looking_from(Vec3::new(1.0, -1.0, 1.0)));
-        cams.push(base.looking_from(Vec3::new(-1.0, 0.0, 1.0)));
-        cams.push(base.looking_from(Vec3::new(0.0, 0.0, 1.0)));
-        cams.push(Camera { target: Vec3::new(-40.0, 10.0, 0.0), distance: 60.0, ..base });
-        for a in &cams {
-            for b in &cams {
-                let anim = CameraAnim::new(*a, *b, 0.0);
-                let frames = (anim.duration * 60.0).round() as usize;
-                let mut prev = anim.sample(0.0).0;
-                let (mut steps, mut done_at) = (Vec::new(), None);
-                for f in 1..=frames + 2 {
-                    let (c, done) = anim.sample(f as f64 / 60.0);
-                    let turn = c.back().dist(prev.back()) + c.basis().0.dist(prev.basis().0);
-                    let moved =
-                        c.target.dist(prev.target) / a.distance.max(b.distance) + (c.distance - prev.distance).abs() / a.distance.max(b.distance);
-                    steps.push((f, turn, moved));
-                    prev = c;
-                    if done && done_at.is_none() {
-                        done_at = Some(f);
-                        assert_eq!(c, *b);
-                    }
-                }
-                assert!(done_at.is_some_and(|f| f >= frames), "ended early at {done_at:?}");
-                let total_turn: f64 = steps.iter().map(|s| s.1).sum();
-                let total_move: f64 = steps.iter().map(|s| s.2).sum();
-                for (f, turn, moved) in &steps {
-                    // The eased curve's fastest frame is 1.5x the average: allow 2x.
-                    assert!(*turn <= 2.0 * total_turn / frames as f64 + 1e-9, "turn jump at frame {f}: {turn} of {total_turn} ({a:?} -> {b:?})");
-                    assert!(*moved <= 2.0 * total_move / frames as f64 + 1e-9, "move jump at frame {f}: {moved} of {total_move}");
-                }
-            }
-        }
     }
 
     /// With Y up: the front view looks along −Z (eye on +Z), the top view looks down −Y with X

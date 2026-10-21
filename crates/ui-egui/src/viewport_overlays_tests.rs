@@ -24,7 +24,6 @@ fn compass_keeps_signed_targets_hover_and_clicks_at_both_scales() {
             let mut h = Harness::new();
             h.call("ui.set", json!({"layout": mode}));
             h.call("ui.prefs", json!({"ui_scale": scale}));
-            h.app.preferences.look_at_anim = false;
             h.settle();
             let outer = crate::scenario::rect_of("axis_view:outer").unwrap();
             assert_eq!(outer.size(), vec2(116.0, 116.0));

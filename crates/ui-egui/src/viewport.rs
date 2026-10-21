@@ -12,7 +12,7 @@ use solidcraft_engine::view::{GridPlane, colors, grid_plane, grid_step, sketch_l
 use std::hash::{Hash, Hasher};
 
 use crate::gpu::{Frame, GpuScene, GpuTarget, SceneSlot, ViewportCallback};
-use crate::navigation::{CameraInput, NavCaps, OrbitSnap, orbit_drag};
+use crate::navigation::{CameraInput, NavCaps, orbit_drag};
 use crate::selection::{BoxSel, origin_quads, origin_size, ray_quad};
 use crate::theme::Tokens;
 use crate::{SolveApp, icons};
@@ -132,8 +132,6 @@ pub struct ViewportState {
     pub axis_drag: Option<Pos2>,
     /// Unsnapped camera while Shift-orbit previews a standard or diagonal view.
     pub orbit_free: Option<Camera>,
-    /// Spring toward the chosen orientation, including after the drag ends.
-    pub(crate) orbit_snap: Option<OrbitSnap>,
     pub build_ms: f64,
     /// Adaptive supersampling (#1288): the view drawn last (its view-projection and pixels) and
     /// since when it has held still (app time, s).
@@ -2427,9 +2425,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         || (primary_nav.is_some() && primary_down)
         || mode.is_some()
         || app.viewport.axis_drag.is_some()
-        || app.viewport.spin
-        || app.viewport.orbit_snap.is_some()
-        || app.cam_anim.is_some();
+        || app.viewport.spin;
     let hits = hover.filter(|_| inside && app.viewport.boxsel.is_none() && !navigating).map(|p| pick_cached(app, &proj, p)).unwrap_or_default();
     // The Fillet and Chamfer window resolves its own corners: the nearest sketch point to a
     // corner drawn from the origin is the fixed origin, which ends no two curves.
@@ -3751,14 +3747,7 @@ fn signed_axis_view(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
             if frame.z.abs() > 0.5 {
                 to.yaw = nearest_quarter_turn(app.cam.yaw);
             }
-            if app.preferences.look_at_anim {
-                app.cancel_view_animation();
-                app.viewport.orbit_free = None;
-                app.viewport.orbit_snap = Some(OrbitSnap { target: to, yaw_velocity: 0.0, pitch_velocity: 0.0, pivot: None });
-                ui.ctx().request_repaint();
-            } else {
-                app.animate_to(to);
-            }
+            app.animate_to(to);
         }
     }
     let home = Rect::from_center_size(pos2(c.x - 37.0, c.y - 37.0), vec2(18.0, 18.0));
@@ -5275,14 +5264,6 @@ mod tests {
         app.viewport.spin = false;
         hover_frame(&mut app, &ctx, vec![]);
         assert!(app.viewport.hover.is_some());
-        app.cam_anim = Some(solidcraft_engine::render::CameraAnim::new(app.cam, app.cam, 0.0));
-        for _ in 0..3 {
-            hover_frame(&mut app, &ctx, vec![]);
-            assert!(app.viewport.hover.is_none());
-        }
-        app.cam_anim = None;
-        hover_frame(&mut app, &ctx, vec![]);
-        assert!(app.viewport.hover.is_some());
     }
 
     /// After a close-up refines a body (#1320), the model draws it from the refined plan (on the
@@ -6255,17 +6236,13 @@ mod tests {
         let before = h.app.cam;
         for _ in 0..100 {
             orbit_drag(&mut h.app, rect, 2.0, 0.0, None, true, false);
-            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
-        }
-        for _ in 0..120 {
-            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
         }
         assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
         assert_eq!(h.app.cam.target, before.target);
         assert_eq!(h.app.cam.distance, before.distance);
         orbit_drag(&mut h.app, rect, 0.0, 0.0, None, false, false);
-        h.settle();
         assert!((h.app.cam.yaw - 1.6).abs() < 1e-6);
+        h.frames(2);
         assert!(h.app.viewport.orbit_free.is_none());
     }
 
@@ -6286,49 +6263,33 @@ mod tests {
     }
 
     #[test]
-    fn camera_resets_cancel_pending_axis_motion() {
+    fn camera_resets_drop_the_unsnapped_orbit() {
         for reset in 0..3 {
             let mut h = crate::scenario::Harness::new();
             h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
             let rect = h.app.viewport.rect.unwrap();
             orbit_drag(&mut h.app, rect, 120.0, 40.0, None, true, false);
-            assert!(h.app.viewport.orbit_snap.is_some());
+            assert!(h.app.viewport.orbit_free.is_some());
             match reset {
                 0 => h.app.fit_view(),
                 1 => h.app.set_up_axis(solidcraft_engine::render::UpAxis::Y),
                 _ => crate::documents::new_design(&mut h.app),
             }
-            let before = h.app.cam;
-            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
-            assert_eq!(h.app.cam.yaw, before.yaw);
-            assert_eq!(h.app.cam.pitch, before.pitch);
-            assert_eq!(h.app.cam.target, before.target);
-            assert!(h.app.viewport.orbit_snap.is_none());
             assert!(h.app.viewport.orbit_free.is_none());
         }
     }
 
     #[test]
-    fn axis_snap_spring_eases_in_and_settles_at_each_frame_rate() {
-        for fps in [30, 60, 120] {
-            let mut h = crate::scenario::Harness::new();
-            h.call("ui.view", json!({"view":"front"}));
-            let rect = h.app.viewport.rect.unwrap();
-            orbit_drag(&mut h.app, rect, 120.0, 0.0, None, true, false);
-            assert_eq!(h.app.cam.yaw, 0.0, "choosing a diagonal must not jump the camera");
-            step_orbit_snap(&mut h.app, rect, 1.0 / f64::from(fps));
-            assert!(h.app.cam.yaw > 0.0 && h.app.cam.yaw < std::f64::consts::FRAC_PI_4 * 0.25);
-            for _ in 0..fps * 2 {
-                step_orbit_snap(&mut h.app, rect, 1.0 / f64::from(fps));
-                assert!(h.app.cam.yaw <= std::f64::consts::FRAC_PI_4 + 0.03, "elastic finish stays small");
-            }
-            assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_4).abs() < 1e-6);
-            assert!(h.app.viewport.orbit_snap.is_none());
-        }
+    fn axis_snap_is_applied_at_once() {
+        let mut h = crate::scenario::Harness::new();
+        h.call("ui.view", json!({"view":"front"}));
+        let rect = h.app.viewport.rect.unwrap();
+        orbit_drag(&mut h.app, rect, 120.0, 0.0, None, true, false);
+        assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_4).abs() < 1e-6, "the snapped view shows in the same frame");
     }
 
-    /// The origin pivot holds through a Shift drag that snaps to an axis: the spring eases the
-    /// view round without letting the origin slide on screen.
+    /// The origin pivot holds through a Shift drag that snaps to an axis: the snapped
+    /// view turns without letting the origin slide on screen.
     #[test]
     fn snapping_keeps_the_origin_still() {
         let mut h = crate::scenario::Harness::new();
@@ -6338,15 +6299,9 @@ mod tests {
         let rect = h.app.viewport.rect.unwrap();
         let at = rect.center() + vec2(50.0, -20.0);
         orbit_drag(&mut h.app, rect, 0.0, 0.0, Some(at), true, true);
-        assert_eq!(
-            h.app.viewport.orbit_snap.as_ref().and_then(|s| s.pivot).map(|(p, _)| p),
-            Some(Vec3::ZERO),
-            "the origin is the pivot while snapping"
-        );
         let before = projection(&h.app, rect).to_screen(Vec3::ZERO).unwrap();
         for _ in 0..30 {
             orbit_drag(&mut h.app, rect, 4.0, 2.0, Some(at), true, true);
-            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
             let after = projection(&h.app, rect).to_screen(Vec3::ZERO).unwrap();
             assert!(after.distance(before) < 2.0, "{before:?} -> {after:?}");
         }
@@ -6444,7 +6399,6 @@ mod tests {
         let before = projection(&h.app, rect).to_screen(pivot).unwrap();
         for _ in 0..20 {
             orbit_drag(&mut h.app, rect, 4.0, 2.0, Some(at), true, true);
-            step_orbit_snap(&mut h.app, rect, 1.0 / 60.0);
             let after = projection(&h.app, rect).to_screen(pivot).unwrap();
             assert!(after.distance(before) < 2.0);
         }
@@ -6454,7 +6408,6 @@ mod tests {
         let before = h.app.cam;
         h.call("ui.drag", json!({"x0":800,"y0":500,"x1":1020,"y1":500,"button":"middle","shift":true,"steps":40}));
         assert!((h.app.cam.yaw - 1.76).abs() < 1e-6, "before={before:?}, after={:?}", h.app.cam);
-        assert!(h.app.viewport.orbit_snap.is_none());
         h.call("ui.view", json!({"view":"front"}));
         h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle"}));
         assert_eq!(h.app.cam.yaw, before.yaw);
@@ -6476,7 +6429,6 @@ mod tests {
             assert!((h.app.cam.pitch - expected.pitch).abs() < 1e-6, "{preset}: {:?}", h.app.cam);
             assert_eq!(h.app.cam.target, before.target);
             assert_eq!(h.app.cam.distance, before.distance);
-            assert!(h.app.viewport.orbit_snap.is_none());
             h.call("ui.view", json!({"view":"front"}));
             h.call("ui.drag", json!({"x0":800,"y0":500,"x1":1020,"y1":500,"button":"right","shift":true,"steps":40}));
             assert!((h.app.cam.yaw - std::f64::consts::FRAC_PI_2).abs() < 1e-6, "{preset}: {:?}", h.app.cam);

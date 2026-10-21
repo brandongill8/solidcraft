@@ -80,6 +80,13 @@ pub(crate) struct State {
     pub panels: Vec<Rect>,
     pub browser: Option<Rect>,
     pub history: Option<Rect>,
+    /// In-memory seam drag width, never serialized as a preference.
+    pub history_drag_width: Option<f32>,
+    /// Unreserved canvas bounds used by History docking targets.
+    pub history_dock_space: Option<Rect>,
+    /// Browser/history collapse progress shared by both cards for this frame.
+    pub history_folding: Option<[f32; 2]>,
+    pub history_fold_motion: Option<[crate::timeline_left::FoldMotion; 2]>,
     pub content: Option<Rect>,
 }
 
@@ -90,6 +97,9 @@ pub(crate) fn covered_rects(app: &SolveApp) -> Vec<Rect> {
         rects.extend(app.shell.cards.iter().copied());
         rects.extend(app.shell.panels.iter().copied());
         rects.extend(app.shell.history);
+    }
+    if app.ui.show_timeline && app.preferences.timeline_left {
+        rects.extend(app.shell.history.map(|card| crate::ui_kit::HistorySeam::new(card).pill));
     }
     rects.extend(app.shell.browser.filter(|_| app.ui.show_browser));
     rects.extend(app.viewport.palette_rect.filter(|_| app.session.active_sketch.is_some()));

@@ -252,3 +252,60 @@ fn a_long_body_name_stays_inside_the_card_and_ends_in_an_ellipsis() {
     assert!(label.right() <= card.right(), "{label:?} spills out of {card:?}");
     assert!(label.width() > 100.0, "the name keeps the room it has: {label:?}");
 }
+
+#[test]
+fn collapsed_rail_shares_header_hover_inset_and_expands_from_its_whole_card() {
+    let previous = crate::theme::is_dark();
+    for dark in [false, true] {
+        crate::theme::set_dark(dark);
+        for collapsed in [false, true] {
+            let ctx = crate::fonts::test_context();
+            ctx.global_style_mut(|style| style.animation_time = 0.0);
+            let mut app = SolveApp::new(Default::default(), Default::default());
+            app.ui.tab = "SURFACE".into();
+            app.preferences.timeline_left = true;
+            app.preferences.timeline_left_browser_collapsed = collapsed;
+            crate::theme::TabAccent::publish(&app, &ctx);
+            let bounds = Rect::from_min_size(Pos2::ZERO, vec2(600.0, 700.0));
+            let draw = |app: &mut SolveApp, events| {
+                crate::test_support::frame(&ctx, egui::RawInput { screen_rect: Some(bounds), events, ..Default::default() }, |ui| {
+                    floating(app, ui, bounds);
+                })
+            };
+            for _ in 0..3 {
+                draw(&mut app, vec![]);
+            }
+            let card = rect_of("browser:card").unwrap();
+            let header = rect_of("browser:header").unwrap();
+            // Hover at the bottom margin, far away from the disclosure and rotated title.
+            let at = if collapsed { card.center_bottom() - vec2(0.0, 2.0) } else { header.center() };
+            draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+            let output = draw(&mut app, vec![egui::Event::PointerMoved(at)]);
+            assert_eq!(output.platform_output.cursor_icon, egui::CursorIcon::PointingHand);
+            let accent = crate::theme::TabAccent::current(&ctx);
+            let mut hover = None;
+            for shape in &output.shapes {
+                crate::test_support::each_shape(&shape.shape, &mut |shape| {
+                    if let egui::Shape::Rect(rect) = shape
+                        && rect.fill == accent.soft
+                    {
+                        hover = Some(rect.clone());
+                    }
+                });
+            }
+            let hover =
+                hover.unwrap_or_else(|| panic!("dark={dark}, collapsed={collapsed}, at={at:?}, accent={accent:?}, shapes={:?}", output.shapes));
+            let inset = CARD_INSET + 1.0; // shared frame's inner margin and border
+            assert_eq!(hover.rect, if collapsed { card.shrink(inset) } else { header });
+            assert_eq!(hover.rect.left() - card.left(), inset);
+            assert_eq!(card.right() - hover.rect.right(), inset);
+            assert_eq!(hover.corner_radius, egui::CornerRadius::same(Tokens::get().radius_lg.saturating_sub(CARD_INSET as u8)));
+            if collapsed {
+                draw(&mut app, crate::test_support::pointer(at, true));
+                draw(&mut app, crate::test_support::pointer(at, false));
+                assert!(!app.preferences.timeline_left_browser_collapsed, "the bottom margin expands the rail");
+            }
+        }
+    }
+    crate::theme::set_dark(previous);
+}

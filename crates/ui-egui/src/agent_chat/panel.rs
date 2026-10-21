@@ -445,19 +445,11 @@ fn strip(app: &mut SolveApp, ui: &mut egui::Ui) {
 /// Pop out (or Dock, in its own window), Minimise and Close. In its own window the system moves
 /// and minimises it, so there is no grip and no Minimise.
 fn header(app: &mut SolveApp, ui: &mut egui::Ui, left: bool) {
-    let t = Tokens::get();
     let state = app.agent_chat.state();
     let popped = app.preferences.agent_chat_popped;
     ui.horizontal(|ui| {
         let title = {
-            let (grip, _) = ui.allocate_exact_size(vec2(if popped { 0.0 } else { 10.0 }, 18.0), Sense::hover());
-            if !popped {
-                for row in 0..3 {
-                    for col in 0..2 {
-                        ui.painter().circle_filled(grip.left_top() + vec2(2.5 + col as f32 * 5.0, 4.0 + row as f32 * 5.0), 1.1, t.text_dim);
-                    }
-                }
-            }
+            let grip = if popped { ui.allocate_exact_size(vec2(0.0, 18.0), Sense::hover()).0 } else { ui_kit::panel_grip(ui).rect };
             let l = ui.label(
                 RichText::new(tr("ui.agent_chat")).semibold().color(crate::theme::Tokens::get().text).size(crate::theme::Tokens::get().font_heading),
             );

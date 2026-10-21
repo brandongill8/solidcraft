@@ -171,7 +171,6 @@ pub(crate) fn modifier_motion(
         app.viewport.orbit_pivot = None;
         app.viewport.orbit_from = None;
         app.viewport.orbit_free = None;
-        app.viewport.orbit_snap = None;
     }
     app.viewport.modifier_nav = next;
     next.map(|(mode, p)| {
@@ -237,10 +236,7 @@ pub(crate) fn view_key(app: &mut SolveApp, ctx: &egui::Context, key: egui::Key, 
     } else if !repeat {
         let degrees = if mods.shift { 90.0 } else { 15.0 };
         app.viewport.key_hold = Some(KeyHold { key, action, shift: mods.shift, since: app.now });
-        // Turn from where a step in flight is going, so taps add up and the one animation is
-        // retargeted rather than a second started.
-        let from = app.cam_anim.map_or(app.cam, |a| a.to);
-        let _ = app.run("view.navigate", json!({"camera": from, "action": action, "degrees": degrees}));
+        let _ = app.run("view.navigate", json!({"camera": app.cam, "action": action, "degrees": degrees}));
     }
     true
 }
@@ -270,7 +266,6 @@ pub(crate) fn step_key_hold(app: &mut SolveApp, ctx: &egui::Context) {
         && cam.is_valid()
     {
         app.cancel_view_animation();
-        app.viewport.orbit_snap = None;
         app.viewport.orbit_free = None;
         app.cam = cam;
     }
@@ -375,7 +370,6 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     let pinch = ui.input(pinch_factor);
     let h = rect.height().max(1.0) as f64;
     if inside && pinch != 1.0 {
-        app.viewport.orbit_snap = None;
         app.viewport.orbit_free = None;
         // Spread zooms in: the camera distance shrinks by the pinch factor.
         let f = f64::from(pinch).powf(-crate::prefs::zoom_sign(app));
@@ -392,7 +386,6 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
         }
     }
     if inside && scroll != 0.0 {
-        app.viewport.orbit_snap = None;
         app.viewport.orbit_free = None;
         let f = (-scroll as f64 * 0.0015 * crate::prefs::zoom_sign(app)).exp();
         let anchor = zoom_anchor(app, rect, hover, caps.orbit);
@@ -409,7 +402,6 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     }
     // Two-finger scroll pans the model with the fingers.
     if inside && pan != egui::Vec2::ZERO {
-        app.viewport.orbit_snap = None;
         app.viewport.orbit_free = None;
         if app.preferences.nav == crate::prefs::TOUCHPAD_NAV {
             camera_motion(app, rect, json!({"motion":"pan","delta":[pan.x,pan.y]}));
@@ -522,9 +514,6 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
             };
         orbit_drag(app, rect, f64::from(delta.x), f64::from(delta.y), press, snap, true);
     } else {
-        if matches!(mode, Some(NavMode::Pan | NavMode::Zoom)) {
-            app.viewport.orbit_snap = None;
-        }
         if app.viewport.axis_drag.is_none() {
             app.viewport.orbit_free = None;
         }
@@ -567,14 +556,8 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     }
     if !app.cam.is_valid() {
         app.viewport.orbit_free = None;
-        app.viewport.orbit_snap = None;
         app.cam = Camera::default();
         app.fit_view();
-    }
-
-    step_orbit_snap(app, rect, ui.input(|i| f64::from(i.stable_dt)));
-    if app.viewport.orbit_snap.is_some() {
-        ui.ctx().request_repaint();
     }
     CameraInput { hover, scroll, mods, middle, secondary_down, primary_down, primary_pressed, delta, inside, axes, pinch, pan, primary_nav, mode }
 }
@@ -631,19 +614,13 @@ pub(crate) fn snapped_axis_camera(cam: Camera) -> Camera {
     to
 }
 
-pub(crate) struct OrbitSnap {
-    pub(crate) target: Camera,
-    pub(crate) yaw_velocity: f64,
-    pub(crate) pitch_velocity: f64,
-    /// The pivot and where it lies in the camera's frame ([`Camera::frame_coords`]).
-    pub(crate) pivot: Option<(Vec3, Vec3)>,
-}
-
-/// Pointer motion accumulates independently of the spring preview, so many small deltas
-/// still cross snap boundaries. Keep a small angular margin to avoid boundary flicker.
+/// Orbit by a pointer drag. With `snap` the displayed view is the nearest standard or diagonal
+/// direction at once; the unsnapped orbit is kept in `orbit_free` so many small deltas still
+/// cross snap boundaries. A small angular margin avoids flicker at a boundary.
 pub(crate) fn orbit_drag(app: &mut SolveApp, rect: Rect, dx: f64, dy: f64, press: Option<Pos2>, snap: bool, around_cursor: bool) {
     let displayed = app.cam;
-    if let Some(free) = app.viewport.orbit_free.take() {
+    let previous_free = app.viewport.orbit_free.take();
+    if let Some(free) = previous_free {
         app.cam = free;
     }
     if around_cursor {
@@ -653,62 +630,31 @@ pub(crate) fn orbit_drag(app: &mut SolveApp, rect: Rect, dx: f64, dy: f64, press
     }
     let free = app.cam;
     app.viewport.orbit_free = Some(free);
-    if snap || !around_cursor || app.viewport.orbit_snap.is_some() {
-        let mut target = if snap { snapped_axis_camera(free) } else { free };
-        if snap && let Some(previous) = app.viewport.orbit_snap.as_ref() {
-            let b = free.back();
-            if previous.target.back().dot(b) + 0.025 >= target.back().dot(b) {
-                target.yaw = previous.target.yaw;
-                target.pitch = previous.target.pitch;
-            }
+    if !snap {
+        return;
+    }
+    let mut target = snapped_axis_camera(free);
+    // Keep the direction already chosen unless the orbit has clearly left it.
+    if previous_free.is_some_and(|p| p != displayed) {
+        let b = free.back();
+        if displayed.back().dot(b) + 0.025 >= target.back().dot(b) {
+            target.yaw = displayed.yaw;
+            target.pitch = displayed.pitch;
         }
-        // The cursor and origin pivots stay still while a snap eases in; the axis gizmo has no
-        // pivot (it orbits about the view centre, see `axis_view`).
-        let pivot = if around_cursor {
-            match app.preferences.orbit_around {
-                crate::prefs::OrbitAround::Origin => Some(Vec3::ZERO),
-                _ => app.viewport.orbit_pivot,
-            }
-        } else {
-            None
+    }
+    // The cursor and origin pivots stay still; the axis gizmo has no pivot (it orbits about the
+    // view centre, see `axis_view`).
+    let pivot = if around_cursor {
+        match app.preferences.orbit_around {
+            crate::prefs::OrbitAround::Origin => Some(Vec3::ZERO),
+            _ => app.viewport.orbit_pivot,
         }
-        .map(|p| (p, displayed.frame_coords(p)));
-        let spring = app.viewport.orbit_snap.get_or_insert(OrbitSnap { target, yaw_velocity: 0.0, pitch_velocity: 0.0, pivot });
-        spring.target = target;
-        spring.pivot = pivot;
-        app.cam = displayed;
-    }
-}
-
-/// A lightly damped spring: mostly settled in about a third of a second, with a small
-/// elastic finish. Bounded substeps keep the behavior consistent across frame rates.
-pub(crate) fn step_orbit_snap(app: &mut SolveApp, _rect: Rect, dt: f64) {
-    let Some(mut spring) = app.viewport.orbit_snap.take() else { return };
-    let dt = if dt.is_finite() { dt.clamp(0.0, 0.05) } else { 1.0 / 60.0 };
-    let steps = (dt * 240.0).ceil().max(1.0) as usize;
-    let h = dt / steps as f64;
-    let omega = 16.0;
-    let damping = 0.82;
-    let yaw_error = |yaw: f64| (spring.target.yaw - yaw + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
-    for _ in 0..steps.min(12) {
-        spring.yaw_velocity += (omega * omega * yaw_error(app.cam.yaw) - 2.0 * damping * omega * spring.yaw_velocity) * h;
-        spring.pitch_velocity += (omega * omega * (spring.target.pitch - app.cam.pitch) - 2.0 * damping * omega * spring.pitch_velocity) * h;
-        app.cam.yaw += spring.yaw_velocity * h;
-        app.cam.pitch = (app.cam.pitch + spring.pitch_velocity * h).clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
-    }
-    app.cam.target = spring.target.target;
-    let done = yaw_error(app.cam.yaw).abs() < 1e-5
-        && (spring.target.pitch - app.cam.pitch).abs() < 1e-5
-        && spring.yaw_velocity.abs() < 1e-4
-        && spring.pitch_velocity.abs() < 1e-4;
-    if done {
-        app.cam = spring.target;
-    }
-    if let Some((pivot, coords)) = spring.pivot {
-        app.cam.place(pivot, coords);
-    }
-    if !done {
-        app.viewport.orbit_snap = Some(spring);
+    } else {
+        None
+    };
+    app.cam = target;
+    if let Some(p) = pivot {
+        app.cam.place(p, displayed.frame_coords(p));
     }
 }
 
@@ -970,7 +916,6 @@ mod view_key_tests {
     #[test]
     fn arrow_keys_turn_and_pan_the_view() {
         let mut h = Harness::new();
-        h.app.preferences.look_at_anim = false;
         h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
         h.step(&json!({"call": "ui.view", "params": {"view": "front"}})).unwrap();
         h.frames(3);
@@ -1013,22 +958,20 @@ mod view_key_tests {
 
     fn front_view() -> Harness {
         let mut h = Harness::new();
-        h.app.preferences.look_at_anim = true;
         h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
         h.step(&json!({"call": "ui.view", "params": {"view": "front"}})).unwrap();
         h.settle();
         h
     }
 
-    /// Holding an arrow turns the view steadily, by frame time, whatever the key repeat does:
-    /// one animation at most, never a second one fighting the first.
+    /// Holding an arrow turns the view steadily, by frame time, whatever the key repeat does.
     #[test]
     fn a_held_arrow_turns_the_view_steadily_and_ignores_key_repeat() {
         let hold = |repeats: bool| {
             let mut h = front_view();
-            let mut last = h.app.cam.yaw;
             h.app.synthetic.push(arrow(true, false));
             h.frame();
+            let mut last = h.app.cam.yaw;
             let log = h.app.session.log.len();
             let mut deltas = Vec::new();
             for frame in 0..60 {
@@ -1039,9 +982,8 @@ mod view_key_tests {
                 deltas.push(turn(last, h.app.cam.yaw));
                 last = h.app.cam.yaw;
             }
-            assert!(h.app.cam_anim.is_none(), "the held turn runs on key state, not on a tween");
             assert_eq!(h.app.session.log.len(), log, "turn frames do not flood the command log");
-            assert!(deltas.iter().all(|d| *d > 0.0), "the view never stops or reverses while held: {deltas:?}");
+            assert!(deltas.iter().all(|d| *d >= 0.0), "the view never reverses while held: {deltas:?}");
             let steady = &deltas[20..];
             let per_frame = 90f64.to_radians() / 60.0;
             assert!(steady.iter().all(|d| (d - per_frame).abs() < 1e-3), "{steady:?}");
@@ -1054,34 +996,14 @@ mod view_key_tests {
         assert!((hold(false) - hold(true)).abs() < 1e-9, "OS key repeat changes nothing");
     }
 
-    /// A tap is still one animated step of 15°, with one animation.
+    /// A tap is one step of 15°, applied in the frame of the press, and a second tap adds to it.
     #[test]
-    fn a_tap_is_one_animated_step() {
+    fn a_tap_is_one_instant_step() {
         let mut h = front_view();
         let before = h.app.cam.yaw;
         tap(&mut h);
-        h.frames(2);
-        assert!(h.app.cam_anim.is_some(), "the step animates");
-        h.settle();
-        assert!(h.app.cam_anim.is_none());
         assert!((turn(before, h.app.cam.yaw).abs() - 15f64.to_radians()).abs() < 1e-6);
-    }
-
-    /// A tap while a step is in flight retargets that animation: the turns add up and only one
-    /// animation exists, starting where the camera is.
-    #[test]
-    fn a_tap_during_a_step_retargets_the_one_animation() {
-        let mut h = front_view();
-        let before = h.app.cam.yaw;
         tap(&mut h);
-        h.frames(5);
-        let mid = h.app.cam;
-        tap(&mut h);
-        h.frames(1);
-        let anim = h.app.cam_anim.expect("one animation");
-        assert!((turn(before, anim.to.yaw).abs() - 30f64.to_radians()).abs() < 1e-6, "retargeted past the first step");
-        assert!(turn(mid.yaw, anim.from.yaw).abs() < 15f64.to_radians(), "continues from the camera as it is");
-        h.settle();
         assert!((turn(before, h.app.cam.yaw).abs() - 30f64.to_radians()).abs() < 1e-6);
     }
 
@@ -1090,7 +1012,6 @@ mod view_key_tests {
     #[test]
     fn ctrl_8_again_looks_from_the_other_side() {
         let mut h = Harness::new();
-        h.app.preferences.look_at_anim = false;
         h.app.run("sketch.create", json!({"plane": "XY"})).unwrap();
         h.frames(2);
         let back_z = |h: &Harness| h.app.cam.back().z;

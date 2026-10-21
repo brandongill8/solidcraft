@@ -230,9 +230,9 @@ fn floating_browser_clears_cards_shields_input_and_can_dock_again() {
             assert!(crate::browser::drawn_rows().iter().any(|(name, _, _, open)| name == "Origin" && *open == Some(true)));
             h.app.preferences.browser_float = false;
             h.settle();
-            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating && !timeline_left);
+            assert_eq!(h.app.shell.browser.is_some(), mode == LayoutMode::Floating || timeline_left);
             assert!(rect_of("browser:float").is_none());
-            assert_eq!(rect_of("browser:card").is_some(), mode == LayoutMode::Floating && !timeline_left);
+            assert_eq!(rect_of("browser:card").is_some(), mode == LayoutMode::Floating || timeline_left);
             // The saved width follows both the floating card and the docked column.
             let rail = crate::scenario::handle_at("left-browser-rail").unwrap();
             let width = h.app.preferences.browser_width;
@@ -284,7 +284,7 @@ fn browser_and_history_cards_block_input_while_their_gaps_and_space_below_browse
 }
 
 #[test]
-fn left_history_keeps_the_existing_column_in_both_modes() {
+fn left_history_and_browser_share_the_left_edge_without_moving_right_controls() {
     for mode in [LayoutMode::Floating, LayoutMode::Docked] {
         let mut h = Harness::new();
         h.app.ui.layout = mode;
@@ -292,14 +292,21 @@ fn left_history_keeps_the_existing_column_in_both_modes() {
         h.app.run("solid.box", json!({"length":10,"width":10,"height":10,"name":"First"})).unwrap();
         h.settle();
         assert!(rect_of("history:card").is_none());
-        assert!(rect_of("browser:card").is_none());
+        let history = rect_of("history:vertical").unwrap();
+        let browser = rect_of("browser:card").unwrap();
+        assert!(history.right() < browser.left());
         assert!(crate::scenario::handle_at("timeline:First").is_some());
         let viewport = h.app.viewport.rect.unwrap();
         let content = content_rect(&h.app, viewport);
-        assert_eq!(content.left(), 250.0);
+        assert_eq!(viewport.left(), if mode == LayoutMode::Floating { 0.0 } else { crate::ui_kit::history_width(true) });
+        assert_eq!(content.left(), if mode == LayoutMode::Floating { browser.right() + SHELL_GAP } else { viewport.left() });
         assert_eq!(content.bottom(), viewport.bottom());
         if mode == LayoutMode::Floating {
-            assert!(covered(&h.app, pos2(125.0, content.center().y)));
+            assert!(covered(&h.app, history.center()));
+            assert!(covered(&h.app, browser.center()));
+            let gap_x = (history.right() + browser.left()) / 2.0;
+            assert!(covered(&h.app, pos2(gap_x, history.center().y)), "the seam pill shields viewport input");
+            assert!(!covered(&h.app, pos2(gap_x, history.top() + 4.0)), "the rest of the shell gap remains available");
         }
     }
 }

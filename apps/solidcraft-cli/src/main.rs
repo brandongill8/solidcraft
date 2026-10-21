@@ -17,6 +17,8 @@
 //!                                                             MCP server on stdio (docs/mcp.md)
 //! solidcraft-cli licences                                     SolidCraft's licence and the third-party licences
 //! solidcraft-cli icon --out F.png|F.ico [--size N]             the app icon (packaging; drawn, not a file)
+//!
+//! --debug (with any command)                                  SolidCraft's debug log on stderr (or RUST_LOG=LEVEL)
 //! ```
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
@@ -24,6 +26,7 @@
 mod bench_agent;
 mod crashes;
 mod fuzz;
+mod logger;
 mod oracle;
 mod preview;
 mod recipe;
@@ -82,10 +85,13 @@ const USAGE: &str = "usage:
        lands on: gpu, gpu-software, or the CPU rasterizer (auto with no adapter, or cpu); the policy defaults
        to SOLIDCRAFT_GPU, else auto; exits with an error when hardware or software finds no such adapter)
   solidcraft-cli icon --out icon.png [--size 256] | --out icon.ico
+  --debug, with any command: what SolidCraft logs (why a body has no display plan, why a save left its
+      model cache out), on stderr; RUST_LOG=error|warn|info|debug|trace sets one level for every crate
 ";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    logger::init(&mut args);
     let r = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
         Some("eval" | "inspect") => cmd_eval(&args[1..]),

@@ -3,6 +3,12 @@ use super::{actions::icon_button_at, metrics::*, text::paint_text};
 use crate::{scenario, theme::Tokens};
 use egui::{Ui, vec2};
 
+/// Shared active-tab hover tint for the browser and collapsible panel chrome.
+pub(crate) fn panel_header_hover(painter: &egui::Painter, rect: egui::Rect) {
+    let t = Tokens::get();
+    painter.rect_filled(rect, t.radius_lg.saturating_sub(t.space_4 as u8), crate::theme::TabAccent::current(painter.ctx()).soft);
+}
+
 /// Feature title/icon/close band. Tokens: `form_header_height, form_icon_size, form_close_size, form_inset, font_label, text, dialog_rule, space_8/10; icon_button_at tokens`.
 pub(crate) fn header(ui: &mut Ui, icon: &str, title: &str, on_close: impl FnOnce()) {
     header_impl(ui, icon, title, None, on_close);

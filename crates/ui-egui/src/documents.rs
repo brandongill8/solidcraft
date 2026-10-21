@@ -32,7 +32,6 @@ pub struct DocSlot {
 #[derive(Clone, Debug, Default)]
 struct DocView {
     render: crate::render_workspace::ViewState,
-    sketch_choices: crate::sketch_families::Choices,
     hidden_profiles: Vec<u64>,
     shown_dims: Vec<u64>,
     locked_bodies: Vec<String>,
@@ -87,7 +86,6 @@ fn take_view(app: &mut SolveApp) -> DocView {
     let u = &mut app.ui;
     DocView {
         render: std::mem::take(&mut app.render_workspace.view),
-        sketch_choices: std::mem::take(&mut app.sketch_choices),
         hidden_profiles: std::mem::take(&mut u.hidden_profiles),
         shown_dims: std::mem::take(&mut u.shown_dims),
         locked_bodies: std::mem::take(&mut u.locked_bodies),
@@ -98,7 +96,6 @@ fn put_view(app: &mut SolveApp, v: DocView) {
     app.render_workspace.view = v.render;
     crate::render_workspace::invalidate_scene(app);
     crate::render_workspace::sync_backend(app);
-    app.sketch_choices = v.sketch_choices;
     let u = &mut app.ui;
     u.hidden_profiles = v.hidden_profiles;
     u.shown_dims = v.shown_dims;
@@ -119,7 +116,6 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.design_properties = None;
     app.bom = None;
     app.cancel_view_animation();
-    app.viewport.orbit_snap = None;
     app.viewport.orbit_free = None;
     app.preview.reset();
     app.viewport.hover = None;
@@ -201,7 +197,6 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         crate::sketch_attachment_ui::clear(app);
         app.session.replace_design(session);
         crate::render_workspace::reset_document(app);
-        app.sketch_choices = crate::sketch_families::Choices::default();
         app.session.invalidate_view(rev);
         app.cam = Camera::default();
         app.fit_view();

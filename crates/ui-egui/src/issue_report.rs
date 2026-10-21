@@ -642,7 +642,6 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         app.viewport.boxsel = None;
         app.viewport.axis_drag = None;
         app.viewport.orbit_free = None;
-        app.viewport.orbit_snap = None;
         crate::dim_view::drag_end();
         crate::sketch3d::drag_end();
         crate::drag_snap::clear();

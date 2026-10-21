@@ -272,7 +272,6 @@ mod tests {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
         let ctx = crate::fonts::test_context();
-        h.app.preferences.look_at_anim = false;
         for up in ["z", "y"] {
             h.call("ui.prefs", json!({"up_axis":up}));
             h.call("ui.view", json!({"view":"front"}));
@@ -509,43 +508,33 @@ mod tests {
         assert_eq!(h.app.cam.distance, cam.distance);
     }
 
+    /// A view-cube click puts the camera at the view at once and leaves nothing running: the
+    /// mouse orbit that follows moves the camera exactly as far as the pointer, in the same frame.
     #[test]
-    fn cube_navigation_eases_through_intermediate_views_and_can_be_interrupted() {
+    fn a_mouse_orbit_after_a_cube_click_follows_the_pointer_one_to_one() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
-        assert!(h.app.preferences.look_at_anim);
-        for (action, direction) in [(None, Some(Vec3::Z)), (Some("right"), None), (Some("clockwise"), None), (Some("home"), None)] {
-            let from = h.app.cam;
-            navigate(&mut h.app, action, direction);
-            let anim = h.app.cam_anim.expect("cube navigation must animate");
-            assert_eq!(h.app.cam, from, "starting a transition must not jump the camera");
-            let mut previous = from;
-            for frame in 1..=60 {
-                let now = anim.start + anim.duration * f64::from(frame) / 60.0 + if frame == 60 { 1e-9 } else { 0.0 };
-                let (cam, done) = anim.sample(now);
-                let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
-                assert!(angle(previous.back(), cam.back()).max(angle(previous.basis().0, cam.basis().0)) < 10.0);
-                assert_eq!(done, frame == 60);
-                if frame == 30 {
-                    assert_ne!(cam.basis(), from.basis());
-                    assert_ne!(cam.basis(), anim.to.basis());
-                }
-                previous = cam;
-            }
-            h.app.cam = anim.sample(anim.start + anim.duration / 2.0).0;
-            let intermediate = h.app.cam;
-            navigate(&mut h.app, Some("left"), None);
-            assert_eq!(h.app.cam_anim.unwrap().from, intermediate, "another click starts where the camera is");
-            h.app.cam = anim.to;
-            h.app.cancel_view_animation();
-        }
+        h.app.run("solid.box", json!({"length":20,"width":20,"height":20})).unwrap();
+        h.frames(4);
+        let p = crate::scenario::handle_at("navigation_cube:top").unwrap();
+        h.call("ui.click", json!({"x":p.x,"y":p.y}));
+        assert!(h.app.cam.back().dist(Vec3::Z) < 1e-6, "the click shows the top view in its own frame");
+        assert!(h.app.viewport.orbit_free.is_none());
+        let mut expected = h.app.cam;
+        let from = h.app.cam;
+        h.call("ui.drag", json!({"x0":800,"y0":500,"x1":850,"y1":520,"button":"middle","shift":true,"steps":20}));
+        expected.orbit(50.0, 20.0);
+        assert_ne!(h.app.cam, from);
+        assert!((h.app.cam.yaw - expected.yaw).abs() < 1e-9 && (h.app.cam.pitch - expected.pitch).abs() < 1e-9, "{:?}", h.app.cam);
+        let done = h.app.cam;
+        h.frames(30);
+        assert_eq!(h.app.cam, done, "nothing keeps easing after the pointer stops");
     }
 
     #[test]
     fn cube_faces_corners_roll_and_home_drive_the_shared_command() {
         let mut h = crate::scenario::Harness::new();
         h.call("ui.prefs", json!({"navigator_style":"cube"}));
-        h.app.preferences.look_at_anim = false;
         let before = h.app.session.doc.to_json();
         for (name, direction) in [("top", Vec3::Z), ("front", -Vec3::Y), ("right", Vec3::X), ("top_front_right", Vec3::Z - Vec3::Y + Vec3::X)] {
             h.call("ui.view", json!({"view":"iso"}));

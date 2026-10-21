@@ -67,7 +67,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("circle")
         .key("C")
         .enabled(in_sketch)
-        .params(concat!("center: [x,y] or point ref, radius | diameter: number", connect_doc!(), created_doc!())),
+        .params(concat!(
+            "center: [x,y] or point ref, radius | diameter: number; through?: point ref (a point the circle passes through, kept on it: where the tool's second click snapped)",
+            connect_doc!(),
+            created_doc!()
+        )),
     CommandSpec::new("sketch.circle.two_point", "2-Point Circle", circle_two)
         .at("SKETCH", "CREATE")
         .icon("circle2")
@@ -1143,7 +1147,15 @@ fn circle_center(s: &mut Session, p: &Value) -> Result<Value> {
         let c = req_parg(sk, doc, p, "center", cmd)?;
         let ci = sk.add_circle(c.pos(), r, c.idx(), id.as_deref())?;
         mark_construction(sk, &[ci], p);
-        Ok((ids_of(sk, &[ci]), Vec::new()))
+        // A point the circle was drawn through stays on it (#3099): with a placed centre, that
+        // sets the radius.
+        let mut cons = Vec::new();
+        if let Some(v) = p.get("through")
+            && let PArg::Ref(q, _) = parg(sk, doc, v, cmd)?
+        {
+            cons.push(add_c(sk, ConstraintKind::PointOnCurve { p: q, c: ci })?);
+        }
+        Ok((ids_of(sk, &[ci]), cons))
     })?;
     Ok(result(out, info))
 }

@@ -424,7 +424,14 @@ fn run_shape(app: &mut SolveApp, t: &Tool) -> Result<Vec<String>, String> {
             json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "radius": crate::sketch_dims::rounded_radius_value(app, t, p[0].0, p[1].0)})
         }
         "sketch.rectangle.three_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "p2": xy(&p[2])}),
-        "sketch.circle.center" => json!({"center": arg(&p[0]), "radius": d(0, 1)}),
+        "sketch.circle.center" => {
+            // A second click snapped to a point keeps the circle on that point (#3099).
+            let mut v = json!({"center": arg(&p[0]), "radius": d(0, 1)});
+            if p[1].1.is_some() {
+                v["through"] = arg(&p[1]);
+            }
+            v
+        }
         "sketch.circle.two_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1])}),
         "sketch.circle.three_point" => json!({"p0": xy(&p[0]), "p1": xy(&p[1]), "p2": xy(&p[2])}),
         "sketch.arc.three_point" => json!({"start": arg(&p[0]), "end": arg(&p[1]), "through": arg(&p[2])}),

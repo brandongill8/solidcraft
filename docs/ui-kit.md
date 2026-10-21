@@ -57,6 +57,7 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 
 | Module / element | Use and options | Main tokens |
 | --- | --- | --- |
+| history: `HistoryChip`, `HistoryStyle`, `history_drop_bar`, `history_marker`, `HistorySeam`, `history_seam` | One painter family for bottom chips, 38 pt vertical icon chips and single-line 26 pt name rows (the browser's shared `TREE_ROW_HEIGHT`). Selected items use the active tab tint/ink/border; all variants retain multi-tone feature artwork using one shared kind-to-accent rule (Sketch green, Surface orange, Mesh yellow, Form purple, solids base blue); rolled-back items have 42% opacity. Error/warning badges, suppression strikes, horizontal/vertical drop bars and rollback line/hollow circle are shared. No connector lines. | `control_height`, `space_2/3/4/6/8/10/12/14/16/24`, radii, typography, `TabAccent`, `timeline_item`, `control_border`, `text/dim`, `form_error/fill` |
 | search: `CommandSearch`, `MenuItem::search_row` | Ribbon search composition: one persistent ribbon editor expands from 28 to 40 pt and to 520 pt wide with its right edge anchored, magnifier and S/Esc keycap, 38 pt two-line menu row with 26 pt icon tile, accent bold substring, path, shortcut/kind keycap, counts, JSON detail box and footer. The ordinary 30 pt menu row cannot fit a second line; this variant keeps its enabled/selected states and scenario IDs. Ranking and dispatch stay with the caller. | `form_card_width × 2 − space_8` (520 pt), `control_height`, `space_2/3/4/6/8/10/12/14/16/24`, `radius_xl/control_radius`, `control_fill`, `dialog_body/footer/rule/border`, `form_ink/dim/primary/error/error_fill/success/success_fill`, `selected_ink`, `accent_soft`, typography |
 | menu: `Menu`, `MenuItem` | Shared popup, 30 pt rows, 28 pt icon column, clipped labels, right-aligned mono shortcuts, submenu chevrons, checked/unchecked and document swatches, inert 40% disabled rows and danger ink; headings and separators; ribbon drag/pin targets retained | `dialog_body/border/rule`, `radius_xl`, `control_height/radius`, `form_ink/dim/primary/error`, `accent_soft`, typography and spacing |
 | radial: `radial_menu` | Eight rounded annular sectors, parallel 4 pt gaps, 9 pt circular corner joins, tab-accent artwork and hover, centre label/key; existing hold/flick/release dispatch | `dialog_body/border`, `form_ink/dim`, `TabAccent`, icon palette, font/spacing tokens |
@@ -107,6 +108,38 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 | `label_actions` | Clipped row name beside compact actions | `control_height`, form font/spacing tokens |
 | status: `status_header`, `StatusHeader` | Supplied icon/name/status and constraint meter | `font_label`, `text/dim`, `accent`, sketch/header tokens |
 | `progress` | Clamped determinate progress | `space_3/6`, `dialog_rule`, `accent` |
+
+History contents are selected from measured panel width. A 56 pt thin strip shows icons
+and four vertical transport controls: beginning, back, forward and end. The minimum named
+width is 130 pt; it adds horizontal transport and the same six-dot window grip as Assistant.
+When the remaining header space fits its measured text, **History** appears between grip
+and transport. No names-mode flag
+or command selects these layouts. The seam snaps between 56 and 130 pt; widths from 130
+through 624 pt remain continuous and persist as `timeline_left_width`.
+
+Drag the grip or title to dock along the bottom, at the full-height left edge, or beneath
+the browser. Either card's right edge resizes their shared width. This position divides
+available column height equally. Folding either card leaves its header visible and gives the remainder to
+the other. If both are folded, their headers sit together at the top of the column.
+Expansion and collapse share a smooth cubic transition capped at 120 ms, respecting
+the interface’s instant-animation setting. Their collapse controls share the same active-tab blue hover tint. Browser resizing also resizes History.
+The `view.history_layout` command validates width, docking and collapse requests without
+altering the design or opening dialogs. Floating mode preserves viewport projection.
+
+The seam handle overlays the strip's right edge without taking layout space. Its grip is
+visible at rest; the arrow appears only on hover. Click, double-click the edge, or use
+Enter/Space on the focused handle to resize between thin and minimum named widths. Drag
+freely above the named minimum; resizing draws no dotted guide or name label. Header/title dragging
+and the edge width gesture are separate from feature/folder and rollback dragging.
+The rollback marker is 12 pt high.
+Its 2 pt line uses the active tab fill and ends in a 10 pt hollow circle with a 2 pt accent
+border and the card/panel surface inside. The circle overlaps the line end by 1 pt. The bottom
+strip uses the same painter, rotated. Folder selection, range selection, context menus,
+sketch-pattern children, drag reordering and command JSON retain their existing behavior and handles.
+`history_icons`, `history_names`, `history_marker` and the `history_seam_rest/hover/drag` states
+have light/dark gallery references. The CPU
+board test captures both strip widths with expanded and collapsed browsers
+(`SOLIDCRAFT_HISTORY_EVIDENCE`).
 
 `text(ui, text, options)` supports the existing text behaviors and the new error band:
 
