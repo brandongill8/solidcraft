@@ -246,7 +246,8 @@ fn tools_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui, job: &Val
     });
     if save {
         let d = w.tool.clone();
-        let mut p = json!({"name": d.name, "kind": KIND_IDS[d.kind.min(3)], "diameter": d.diameter, "flutes": d.flutes, "corner_radius": d.corner_radius});
+        let mut p =
+            json!({"name": d.name, "kind": KIND_IDS[d.kind.min(3)], "diameter": d.diameter, "flutes": d.flutes, "corner_radius": d.corner_radius});
         if d.id != 0 {
             p["id"] = json!(d.id);
         }
@@ -473,8 +474,12 @@ fn operations_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui, job:
         let source = json!({"sketch": d.sketch});
         let kind = match d.kind {
             0 => json!({"type": "face", "margin": d.margin, "stepover": d.stepover}),
-            1 => json!({"type": "contour", "source": source, "side": SIDE_IDS[d.side.min(2)], "direction": DIRECTION_IDS[d.direction.min(1)], "allowance": d.allowance}),
-            2 => json!({"type": "pocket", "source": source, "direction": DIRECTION_IDS[d.direction.min(1)], "stepover": d.stepover, "allowance": d.allowance, "finish": d.finish}),
+            1 => {
+                json!({"type": "contour", "source": source, "side": SIDE_IDS[d.side.min(2)], "direction": DIRECTION_IDS[d.direction.min(1)], "allowance": d.allowance})
+            }
+            2 => {
+                json!({"type": "pocket", "source": source, "direction": DIRECTION_IDS[d.direction.min(1)], "stepover": d.stepover, "allowance": d.allowance, "finish": d.finish})
+            }
             _ => json!({"type": "drill", "points": {"from": "sketch", "sketch": d.sketch}}),
         };
         let mut p = json!({
@@ -557,22 +562,25 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let job = app.session.execute("manufacture.job", &json!({})).unwrap_or(Value::Null);
     let mut open = true;
     let title = RichText::new(crate::i18n::tr_label("Manufacture")).strong().size(t.font_button);
-    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_manufacture_job")).open(&mut open).resizable(true).show(ctx, |ui| {
-        let mut tab = w.tab;
-        crate::ui_kit::segmented(ui, &mut tab, &TABS, crate::ui_kit::Segments::default());
-        w.tab = tab;
-        if let Some((m, error)) = &w.message
-            && !m.is_empty()
-        {
-            ui.label(RichText::new(m).color(if *error { t.error } else { t.text_dim }));
-        }
-        egui::ScrollArea::vertical().id_salt("mfg_job_scroll").show(ui, |ui| match w.tab {
-            0 => tools_tab(app, &mut w, ui, &job),
-            1 => setups_tab(app, &mut w, ui, &job),
-            2 => operations_tab(app, &mut w, ui, &job),
-            _ => program_tab(app, &mut w, ui),
-        });
-    });
+    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_manufacture_job")).open(&mut open).resizable(true).show(
+        ctx,
+        |ui| {
+            let mut tab = w.tab;
+            crate::ui_kit::segmented(ui, &mut tab, &TABS, crate::ui_kit::Segments::default());
+            w.tab = tab;
+            if let Some((m, error)) = &w.message
+                && !m.is_empty()
+            {
+                ui.label(RichText::new(m).color(if *error { t.error } else { t.text_dim }));
+            }
+            egui::ScrollArea::vertical().id_salt("mfg_job_scroll").show(ui, |ui| match w.tab {
+                0 => tools_tab(app, &mut w, ui, &job),
+                1 => setups_tab(app, &mut w, ui, &job),
+                2 => operations_tab(app, &mut w, ui, &job),
+                _ => program_tab(app, &mut w, ui),
+            });
+        },
+    );
     if open {
         app.manufacture_job = Some(w);
     }

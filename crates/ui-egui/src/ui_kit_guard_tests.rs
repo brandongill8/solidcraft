@@ -218,7 +218,10 @@ fn floating_window_helper_has_only_its_live_consumers() {
         }
     }
     callers.sort();
-    assert_eq!(callers, ["bom_panel.rs", "manufacture_job.rs", "manufacture_panel.rs", "messages.rs", "mouse_gesture.rs", "space_mouse_calibration.rs"]);
+    assert_eq!(
+        callers,
+        ["bom_panel.rs", "manufacture_job.rs", "manufacture_panel.rs", "messages.rs", "mouse_gesture.rs", "space_mouse_calibration.rs"]
+    );
 }
 
 #[test]
