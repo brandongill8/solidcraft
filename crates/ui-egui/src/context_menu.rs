@@ -369,7 +369,7 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
             ];
             let machining = app.ui.tab == "MANUFACTURE";
             v.push(
-                act("ui.workspace.manufacture", "Manufacture", "")
+                act("ui.workspace.manufacture", "Manufacture", "gear")
                     .with(json!({"workspace":"manufacture"}))
                     .key(if machining { "current" } else { "" })
                     .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),
@@ -2046,22 +2046,28 @@ mod workspace_menu_tests {
         h.call("ui.resize", json!({"width":1200,"height":1000}));
         h.step(&json!({"click":{"handle":"ribbon:workspace"}})).unwrap();
         let opener = rect_of("ribbon:workspace").unwrap();
-        let rows: Vec<_> = ["design", "render", "animation", "simulation", "manufacture", "drawing"]
+        let rows: Vec<_> = ["design", "render", "manufacture", "animation", "simulation", "drawing"]
             .iter()
             .map(|slug| rect_of(&format!("workspace:menu:{slug}")).unwrap())
             .collect();
         assert!(rows.windows(2).all(|pair| pair[0].bottom() <= pair[1].top()));
         assert!(rows[0].top() > opener.bottom());
         assert_eq!(rows[0].width(), 450.0);
-        assert!(items(&h.app, &Target::Workspace).iter().skip(2).all(|item| !item.enabled));
+        assert!(items(&h.app, &Target::Workspace).iter().skip(3).all(|item| !item.enabled));
         h.step(&json!({"click":{"handle":"workspace:menu:animation"}})).unwrap();
         assert!(!crate::render_workspace::active(&h.app));
         assert!(h.app.viewport.context_menu.is_some());
         h.step(&json!({"click":{"handle":"workspace:menu:render"}})).unwrap();
         assert!(crate::render_workspace::active(&h.app));
         h.step(&json!({"click":{"handle":"ribbon:workspace"}})).unwrap();
+        h.step(&json!({"click":{"handle":"workspace:menu:manufacture"}})).unwrap();
+        assert!(!crate::render_workspace::active(&h.app));
+        assert_eq!(h.app.ui.tab, "MANUFACTURE");
+        assert_eq!(crate::workspace::visible_tabs(&h.app), vec!["MANUFACTURE"]);
+        h.step(&json!({"click":{"handle":"ribbon:workspace"}})).unwrap();
         h.step(&json!({"click":{"handle":"workspace:menu:design"}})).unwrap();
         assert!(!crate::render_workspace::active(&h.app));
+        assert_eq!(h.app.ui.tab, "MODEL");
         h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
         h.frames(2);
         h.step(&json!({"click":{"handle":"ribbon:workspace"}})).unwrap();

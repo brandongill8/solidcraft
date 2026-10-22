@@ -597,13 +597,13 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_operation_shows_why() {
+    fn a_refused_operation_keeps_the_reason_for_the_window() {
         let mut h = Harness::new();
         super::open(&mut h.app, 2);
-        h.frames(2);
-        h.step(&json!({"widget": "Add operation"})).unwrap();
-        h.frames(2);
-        let w = h.app.manufacture_job.as_ref().unwrap();
-        assert!(matches!(&w.message, Some((_, true))), "no tool or setup yet: the refusal is shown");
+        let mut w = h.app.manufacture_job.take().unwrap();
+        let p = json!({"setup": 1, "tool": 1, "kind": {"type": "face"}, "top": 0.0, "bottom": -1.0, "feed": 100.0, "spindle_rpm": 1000.0});
+        let out = super::run(&mut h.app, &mut w, "manufacture.operation.set", p, "Operation saved");
+        assert!(out.is_none(), "no tool or setup yet");
+        assert!(matches!(&w.message, Some((m, true)) if !m.is_empty()), "{:?}", w.message);
     }
 }

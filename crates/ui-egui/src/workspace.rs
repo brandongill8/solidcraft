@@ -285,6 +285,7 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("inspect.zebra", "Zebra"),
     ("joint.as_built", "As-Built"),
     ("manufacture.operation.set", "Operations"),
+    ("manufacture.simulate", "Simulate"),
     ("manufacture.post", "G-code"),
     ("manufacture.setup.set", "Setups"),
     ("manufacture.tool.set", "Tool Library"),
