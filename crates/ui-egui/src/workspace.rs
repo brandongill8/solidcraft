@@ -289,7 +289,7 @@ pub const RIBBON_LABELS: &[(&str, &str)] = &[
     ("manufacture.post", "G-code"),
     ("manufacture.setup.set", "Setups"),
     ("manufacture.tool.set", "Tool Library"),
-    ("manufacture.toolpath", "Check Toolpath"),
+    ("manufacture.toolpath", "Toolpath"),
     ("material.assign", "Material"),
     ("parameters.change", "Parameters"),
     ("parameters.graph", "Param. Graph"),
