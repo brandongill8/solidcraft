@@ -129,8 +129,10 @@ step through the program, and the collisions marked with red crosses.
 
 ## Limits
 
-Arcs are emitted as short G1 segments (chord error 0.005 mm by default, `tolerance`). No 4/5-axis
-or 3D surfacing. The simulation does not model undercuts, tool holders or fixtures, and checks
+The planner works in short straight moves (chord error 0.005 mm by default, `tolerance`); the post
+turns every run of at least three feed moves along one circle or helix about the tool axis into a
+single `G2`/`G3` with `I`/`J` (and `Z` for a helix), so round pockets, bores and fillets take a few
+lines. The runner and the simulation still walk the straight moves. No 4/5-axis or 3D surfacing. The simulation does not model undercuts, tool holders or fixtures, and checks
 the tool only against the stock and the model. Sizes and work are capped, and bad numbers are
 errors, never panics.
 
@@ -138,4 +140,18 @@ errors, never panics.
 
 In the Manufacture workspace the bottom strip is the **Manufacture history**: the setups and then the operations in the order the program runs them; a click opens the entry in its window. The panel on the right lists the tools that were built, the setups and the operations, each with a New button, a click to edit and a delete button. The workspace switcher shows Manufacture while this tab is open.
 
-The Machining Simulation window has a **Speed** slider (1x runs the whole program in about five seconds), a **Drawing detail** choice (Draft to Smooth: how many cells the stock is drawn with; the stock is shaded smoothly across cells) and **Check resolution**, the cell size of the gouge and volume check, which does not change the drawing.
+The Machining Simulation window plays the program in real cutting time (feeds as set, rapids at the
+rapid speed in Preferences). The slider and the clock above it show minutes and seconds of the cut,
+and **Speed** is a multiple of real time (a new window starts at the speed that plays the whole
+program in the seconds set in Preferences). The stock is cut on its own fine grid: **Drawing detail**
+(Draft to Smooth) sets the cells it is drawn with, and the stock is shaded smoothly across cells.
+**Show stock**, **Show toolpath**, **Show tool** (the cutter drawn at its real size from the Tools
+window: end mills, ball and bull nose, drills, spot drills, reamers, shell and face mills, turning
+with the spindle) and **Show G-code** (a window listing the program in Grbl, Fanuc or Haas form with
+the line being cut highlighted) are checkboxes. **Check collisions** is off until asked for; it runs
+the gouge and volume check on its own **Check resolution** grid and marks the finds with red
+crosses.
+
+Preferences, **Simulation** sets the cells for each Drawing detail, the finest cell, the detail and
+checkboxes a new window starts with, the seconds to play a program, the rapid speed used for the
+time, the fastest tool turn in the picture and the check's cell.

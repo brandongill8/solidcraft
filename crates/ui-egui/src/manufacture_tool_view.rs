@@ -267,14 +267,14 @@ mod tests {
 
     #[test]
     fn the_tip_follows_the_kind() {
-        let height = |kind: ToolKind| profile(&tool(kind, 10.0)).get(0).map(|p| p.1).unwrap_or(f64::NAN);
+        let height = |kind: ToolKind| profile(&tool(kind, 10.0)).first().map(|p| p.1).unwrap_or(f64::NAN);
         let tip_edge = |kind: ToolKind| profile(&tool(kind, 10.0)).get(TIP_POINTS).map(|p| p.1).unwrap_or(f64::NAN);
         assert_eq!(height(ToolKind::FlatEndMill), 0.0);
         assert_eq!(tip_edge(ToolKind::FlatEndMill), 0.0);
         // A ball mill's edge is a radius up from its tip; a drill's follows the point angle.
         assert!((tip_edge(ToolKind::BallEndMill) - 5.0).abs() < 1e-9);
         assert!((tip_edge(ToolKind::Drill) - 5.0 / (59.0f64.to_radians()).tan()).abs() < 1e-6);
-        assert!(tip_edge(ToolKind::SpotDrill) < tip_edge(ToolKind::Drill), "a 90 degree point is shallower than 118");
+        assert!(tip_edge(ToolKind::SpotDrill) > tip_edge(ToolKind::Drill), "a 90 degree point is sharper, so taller, than 118");
         let bull = profile(&tool(ToolKind::BullNoseEndMill, 10.0));
         assert!(bull.iter().take(TIP_POINTS + 1).any(|(_, z)| *z == 0.0) && bull[TIP_POINTS].1 > 0.0, "flat, then a corner radius");
     }

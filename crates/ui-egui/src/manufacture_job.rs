@@ -1003,6 +1003,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             let room = (screen.height() - 160.0 - 24.0 * tab as f32).clamp(200.0, 900.0);
             let closed = crate::ui_kit::Window::new(egui::Id::new(("sc_manufacture_window", tab)), "gear", crate::i18n::tr_label(TABS[tab]))
                 .cards(2.0)
+                .tall(room)
                 .placed(egui::Align2::LEFT_TOP, at)
                 .show_body(ctx, |ui| {
                     if let Some((from, m, error)) = &w.message
@@ -1011,12 +1012,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     {
                         ui.label(RichText::new(m).color(if *error { t.error } else { t.text_dim }));
                     }
-                    egui::ScrollArea::vertical().max_height(room).id_salt(("mfg_job_scroll", tab)).show(ui, |ui| match tab {
+                    // The window opens tall, and its own body scrolls when a tab is taller than the screen.
+                    match tab {
                         TOOLS => tools_tab(app, &mut w, ui, &job),
                         SETUP => setups_tab(app, &mut w, ui, &job),
                         OPERATIONS => operations_tab(app, &mut w, ui, &job),
                         _ => program_tab(app, &mut w, ui),
-                    });
+                    }
                 });
             if closed {
                 open = false;
@@ -1300,6 +1302,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let file = dir.join("tools.json").to_string_lossy().into_owned();
         let mut h = Harness::new();
+        // Tall enough that the whole window is on the screen: a click cannot reach a button below it.
+        h.call("ui.resize", json!({"width": 1600, "height": 3000}));
         run_cmd(&mut h, "manufacture.tool.set", json!({"id": 2, "name": "My ball mill", "kind": "ball_end_mill", "diameter": 6.0}));
         super::open(&mut h.app, TOOLS);
         h.app.manufacture_job.as_mut().unwrap().library_path = file.clone();

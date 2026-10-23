@@ -384,6 +384,7 @@ pub struct Window<'a> {
     page_rows: f32,
     page_padding: egui::Vec2,
     left_slot: bool,
+    height: Option<f32>,
 }
 
 impl<'a> Window<'a> {
@@ -406,7 +407,17 @@ impl<'a> Window<'a> {
             page_rows: 16.0,
             page_padding: vec2(Tokens::get().space_16, Tokens::get().space_16),
             left_slot: false,
+            height: None,
         }
+    }
+
+    /// Open the card this tall (the body scrolls when its content is taller), instead of the
+    /// default height of a floating window; for windows holding long forms.
+    pub(crate) fn tall(mut self, height: f32) -> Self {
+        if height.is_finite() && height > 0.0 {
+            self.height = Some(height.min(4000.0));
+        }
+        self
     }
 
     /// Pin the card at `align` of the screen, `offset` away (it then no longer moves).
@@ -578,6 +589,10 @@ impl<'a> Window<'a> {
             .frame(frame)
             .fade_in(false)
             .fade_out(false);
+        let window = match self.height {
+            Some(h) => window.default_height(h),
+            None => window,
+        };
         let window = match (self.anchor, self.placed) {
             (Some((align, offset)), _) => window.anchor(align, offset),
             (None, Some((pivot, pos))) => window.pivot(pivot).default_pos(pos),

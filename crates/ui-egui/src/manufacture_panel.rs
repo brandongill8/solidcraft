@@ -150,11 +150,7 @@ pub fn clock(seconds: f64) -> String {
     let s = if seconds.is_finite() { seconds.max(0.0) } else { 0.0 };
     let whole = s.floor() as u64;
     let (h, m, sec) = (whole / 3600, whole % 3600 / 60, whole % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{sec:02}")
-    } else {
-        format!("{m}:{:04.1}", sec as f64 + (s - s.floor()))
-    }
+    if h > 0 { format!("{h}:{m:02}:{sec:02}") } else { format!("{m}:{:04.1}", sec as f64 + (s - s.floor())) }
 }
 
 /// The cell of the picture for a detail level: the cells asked for in Preferences over the
@@ -238,22 +234,22 @@ fn make_program(app: &mut SolveApp, d: &mut MfgPanel) {
 /// The G-code line (from 0) the move in progress runs from.
 pub fn current_line(d: &MfgPanel) -> Option<usize> {
     let (_, map) = d.program.as_ref()?;
-    let step = d.step().checked_sub(1)?;
-    map.get(step).copied()
+    let index = d.step().min(map.len().checked_sub(1)?);
+    map.get(index).copied()
 }
 
 /// Where the tool is and which tool it is: the tip in work coordinates, the move it is on.
 fn tool_at(run: &WatchRun, time: f64) -> Option<(Vec3, usize)> {
     let r = &run.runner;
     let segs = r.segments();
-    let step = r.step().min(segs.len());
     let times = r.times();
-    let seg = segs.get(step.checked_sub(1).unwrap_or(0))?;
-    if step == 0 {
-        return Some((seg.from, seg.op));
-    }
-    let end = times.get(step - 1).copied().unwrap_or(0.0);
-    let start = if step >= 2 { times.get(step - 2).copied().unwrap_or(0.0) } else { 0.0 };
+    let step = r.step();
+    let Some(seg) = segs.get(step) else {
+        let last = segs.last()?;
+        return Some((last.to, last.op));
+    };
+    let start = step.checked_sub(1).and_then(|i| times.get(i)).copied().unwrap_or(0.0);
+    let end = times.get(step).copied().unwrap_or(start);
     let f = if end > start { ((time - start) / (end - start)).clamp(0.0, 1.0) } else { 1.0 };
     Some((seg.from + (seg.to - seg.from) * f, seg.op))
 }
@@ -266,7 +262,9 @@ fn mm3(v: f64) -> String {
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut d) = app.manufacture.take() else { return };
     let t = Tokens::get();
-    if d.run.is_none() && d.error.is_none() || d.built_for != (d.detail, app.session.revision) && (d.error.is_none() || d.built_for.1 != app.session.revision) {
+    if d.run.is_none() && d.error.is_none()
+        || d.built_for != (d.detail, app.session.revision) && (d.error.is_none() || d.built_for.1 != app.session.revision)
+    {
         make_run(app, &mut d);
     }
     if d.collisions && d.run.is_some() && d.check_for != (app.session.revision, d.resolution.to_bits()) {
@@ -287,7 +285,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     }
     let rev_per_s = f64::from(app.preferences.sim_spin_cap);
     if let Some(run) = &d.run {
-        let rpm = tool_at(run, d.time).and_then(|(_, op)| run.rpm.get(run.runner.segments().get(0).map_or(op, |_| op)).copied()).unwrap_or(0.0);
+        let rpm = tool_at(run, d.time).and_then(|(_, op)| run.rpm.get(op).copied()).unwrap_or(0.0);
         let rate = (rpm / 60.0).min(rev_per_s).max(0.0);
         d.spin = (d.spin + rate * std::f64::consts::TAU * f64::from(ctx.input(|i| i.stable_dt)).min(0.1)) % std::f64::consts::TAU;
     }
@@ -414,31 +412,34 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
 fn gcode_window(ctx: &egui::Context, d: &mut MfgPanel, t: &Tokens) {
     let current = current_line(d);
     let mut dialect = d.dialect;
-    let closed = crate::ui_kit::Window::new(egui::Id::new("sc_simulation_gcode"), "gear", crate::i18n::tr_label("G-code")).cards(2.0).show_body(ctx, |ui| {
-        crate::ui_kit::segmented(ui, &mut dialect, &DIALECT_NAMES, crate::ui_kit::Segments::default());
-        let Some((lines, _)) = &d.program else {
-            ui.label(RichText::new("No program").color(t.text_dim));
-            return;
-        };
-        let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
-        let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(360.0);
-        if current != d.followed
-            && let Some(c) = current
-        {
-            area = area.vertical_scroll_offset(c.saturating_sub(LINES_ABOVE) as f32 * row_h);
-        }
-        area.show_rows(ui, row_h, lines.len(), |ui, range| {
-            for i in range {
-                let text = lines.get(i).map_or("", String::as_str);
-                let on = current == Some(i);
-                let colour = if on { t.text } else { t.text_dim };
-                let response = ui.label(RichText::new(format!("{:>5}  {text}", i + 1)).monospace().color(colour));
-                if on {
-                    ui.painter().rect_filled(response.rect.expand2(egui::vec2(4.0, 0.0)), 2.0, t.accent.gamma_multiply(0.25));
-                }
+    let closed = crate::ui_kit::Window::new(egui::Id::new("sc_simulation_gcode"), "gear", crate::i18n::tr_label("G-code"))
+        .cards(2.0)
+        .tall(440.0)
+        .show_body(ctx, |ui| {
+            crate::ui_kit::segmented(ui, &mut dialect, &DIALECT_NAMES, crate::ui_kit::Segments::default());
+            let Some((lines, _)) = &d.program else {
+                ui.label(RichText::new("No program").color(t.text_dim));
+                return;
+            };
+            let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y;
+            let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(360.0);
+            if current != d.followed
+                && let Some(c) = current
+            {
+                area = area.vertical_scroll_offset(c.saturating_sub(LINES_ABOVE) as f32 * row_h);
             }
+            area.show_rows(ui, row_h, lines.len(), |ui, range| {
+                for i in range {
+                    let text = lines.get(i).map_or("", String::as_str);
+                    let on = current == Some(i);
+                    let colour = if on { t.text } else { t.text_dim };
+                    let response = ui.label(RichText::new(format!("{:>5}  {text}", i + 1)).monospace().color(colour));
+                    if on {
+                        ui.painter().rect_filled(response.rect.expand2(egui::vec2(4.0, 0.0)), 2.0, t.accent.gamma_multiply(0.25));
+                    }
+                }
+            });
         });
-    });
     d.dialect = dialect;
     d.followed = current;
     if closed {
@@ -532,7 +533,10 @@ fn paint_stock(
             if cut.get(j * nx + i).copied().unwrap_or(false) {
                 for (di, dj) in [(-1i64, -1i64), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
                     let (a, b) = (i as i64 + di, j as i64 + dj);
-                    if a >= 0 && b >= 0 && (a as usize) < nx && (b as usize) < ny
+                    if a >= 0
+                        && b >= 0
+                        && (a as usize) < nx
+                        && (b as usize) < ny
                         && let Some(c) = near.get_mut(b as usize * nx + a as usize)
                     {
                         *c = true;
@@ -650,68 +654,109 @@ mod tests {
         run(h, "manufacture.operation.set", op);
     }
 
-    #[test]
-    fn the_window_simulates_the_job_and_scrubs_through_it() {
-        let mut h = Harness::new();
-        block_with_pocket(&mut h);
+    fn open_window(h: &mut Harness) {
         h.step(&json!({"start": "manufacture.simulate"})).unwrap();
-        assert!(h.app.manufacture.is_some(), "ui.start opens the window");
         h.frames(3);
-        let d = h.app.manufacture.as_ref().unwrap();
-        let report = d.report.as_ref().expect("the full run");
-        assert!(report.total > 10 && !report.segs.is_empty());
-        assert!(report.reply["counts"]["gouge"].as_u64().unwrap() >= 1, "the pocket is cut out of the solid block");
-        assert!(d.surface.is_some(), "the stock is drawn");
-        assert!(h.widget("Play").is_some() && h.widget("Rewind").is_some());
-        h.step(&json!({"widget": "Play"})).unwrap();
-        h.frames(4);
-        assert!(h.app.manufacture.as_ref().unwrap().step > 0, "playing advances the program");
-        h.step(&json!({"widget": "Rewind"})).unwrap();
-        h.frames(2);
-        assert_eq!(h.app.manufacture.as_ref().unwrap().step, 0);
     }
 
     #[test]
-    fn the_speed_and_the_drawing_detail_are_adjustable() {
+    fn the_window_cuts_the_stock_as_the_time_goes_on() {
         let mut h = Harness::new();
         block_with_pocket(&mut h);
-        h.step(&json!({"start": "manufacture.simulate"})).unwrap();
-        h.frames(3);
-        for label in ["Speed", "Drawing detail", "Check resolution (mm)"] {
-            assert!(h.widget(label).is_some(), "{label}");
-        }
-        let cells = |h: &Harness| h.app.manufacture.as_ref().unwrap().surface.as_ref().map(|(_, s)| s.nx * s.ny).unwrap_or(0);
-        // The window opens on Fine; Draft draws fewer cells and Smooth more.
+        open_window(&mut h);
+        let d = h.app.manufacture.as_ref().unwrap();
+        let run = d.run.as_ref().expect("the run");
+        assert!(run.runner.total() > 10 && run.runner.duration() > 1.0);
+        assert!(d.step() <= 1, "only a move that takes no time is done at the start");
+        assert!(h.widget("Play").is_some() && h.widget("Rewind").is_some());
+        // Half way through the time, part of the program is done and some stock is gone.
+        let half = run.runner.duration() / 2.0;
+        h.app.manufacture.as_mut().unwrap().time = half;
+        h.frames(2);
+        let d = h.app.manufacture.as_ref().unwrap();
+        assert!(d.step() > 0 && d.run.as_ref().unwrap().runner.removed() > 0.0);
+        h.step(&json!({"widget": "Play"})).unwrap();
+        h.frames(4);
+        assert!(h.app.manufacture.as_ref().unwrap().time > half, "playing moves the clock on");
+        h.step(&json!({"widget": "Rewind"})).unwrap();
+        h.frames(2);
+        let d = h.app.manufacture.as_ref().unwrap();
+        assert!(d.step() <= 1 && d.time == 0.0);
+        assert!(d.run.as_ref().unwrap().runner.removed() < 1e-9, "rewinding puts the stock back");
+    }
+
+    #[test]
+    fn the_drawing_detail_sets_how_fine_the_stock_is_and_the_check_does_not() {
+        let mut h = Harness::new();
+        block_with_pocket(&mut h);
+        open_window(&mut h);
+        let cells = |h: &Harness| h.app.manufacture.as_ref().unwrap().run.as_ref().map(|r| r.runner.grid().nx * r.runner.grid().ny).unwrap_or(0);
         h.app.manufacture.as_mut().unwrap().detail = 0;
         h.frames(3);
         let draft = cells(&h);
         h.app.manufacture.as_mut().unwrap().detail = 3;
-        h.app.manufacture.as_mut().unwrap().resolution = 0.1;
-        h.app.manufacture.as_mut().unwrap().revision = u64::MAX;
-        h.frames(4);
+        h.frames(3);
         let smooth = cells(&h);
-        assert!(draft > 0 && draft <= 10_000, "{draft}");
-        assert!(smooth > draft, "smooth {smooth} draft {draft}");
-        // Slower is fewer moves a frame; faster, more.
-        let moves = |h: &mut Harness, speed: f64| {
-            let d = h.app.manufacture.as_mut().unwrap();
-            d.speed = speed;
-            d.step = 0;
-            d.playing = true;
-            h.frames(10);
-            h.app.manufacture.as_ref().unwrap().step
-        };
-        let slow = moves(&mut h, 0.25);
-        let fast = moves(&mut h, 8.0);
-        assert!(fast > slow, "fast {fast} slow {slow}");
+        assert!(draft > 0 && smooth > draft * 3, "draft {draft} smooth {smooth}");
+        // The collision check's cell is its own business.
+        h.app.manufacture.as_mut().unwrap().resolution = 0.05;
+        h.frames(3);
+        assert_eq!(cells(&h), smooth);
+    }
+
+    #[test]
+    fn collisions_are_checked_only_when_asked_for() {
+        let mut h = Harness::new();
+        block_with_pocket(&mut h);
+        open_window(&mut h);
+        assert!(!h.app.manufacture.as_ref().unwrap().collisions && h.app.manufacture.as_ref().unwrap().check.is_none());
+        h.app.manufacture.as_mut().unwrap().collisions = true;
+        h.frames(3);
+        let d = h.app.manufacture.as_ref().unwrap();
+        assert!(d.check.as_ref().is_some_and(|c| c["counts"]["gouge"].as_u64().unwrap_or(0) >= 1), "the pocket is cut out of the solid block");
+    }
+
+    #[test]
+    fn the_time_is_a_clock_and_the_speed_a_multiple_of_real_time() {
+        assert_eq!(super::clock(75.5), "1:15.5");
+        assert_eq!(super::clock(0.0), "0:00.0");
+        assert_eq!(super::clock(3725.0), "1:02:05");
+        assert_eq!(super::clock(f64::NAN), "0:00.0");
+        let d = super::MfgPanel { speed_log: 2.0, ..Default::default() };
+        assert!((d.speed() - 100.0).abs() < 1e-9);
+        let d = super::MfgPanel { speed_log: 99.0, ..Default::default() };
+        assert!((d.speed() - 10_000.0).abs() < 1e-6, "clamped");
+    }
+
+    #[test]
+    fn the_program_follows_the_cut_in_a_window_of_its_own() {
+        let mut h = Harness::new();
+        block_with_pocket(&mut h);
+        open_window(&mut h);
+        h.app.manufacture.as_mut().unwrap().show_gcode = true;
+        h.frames(3);
+        let d = h.app.manufacture.as_ref().unwrap();
+        let (lines, map) = d.program.as_ref().expect("the program");
+        assert!(lines.len() > 10 && map.len() == d.run.as_ref().unwrap().runner.total());
+        let end = d.run.as_ref().unwrap().runner.duration();
+        h.app.manufacture.as_mut().unwrap().time = end * 0.6;
+        h.frames(2);
+        let d = h.app.manufacture.as_ref().unwrap();
+        let line = super::current_line(d).expect("a current line");
+        let (lines, _) = d.program.as_ref().unwrap();
+        let text = lines.get(line).map(String::as_str).unwrap_or("");
+        assert!(text.starts_with('G') || text.starts_with('X') || text.starts_with('Y') || text.starts_with('Z'), "line {line}: {text}");
+        // Another dialect is another text for the same moves.
+        h.app.manufacture.as_mut().unwrap().dialect = 1;
+        h.frames(3);
+        assert!(h.app.manufacture.as_ref().unwrap().program.as_ref().unwrap().0.iter().any(|l| l.contains("M6")));
     }
 
     #[test]
     fn a_job_without_stock_says_why_instead_of_drawing() {
         let mut h = Harness::new();
-        h.step(&json!({"start": "manufacture.simulate"})).unwrap();
-        h.frames(2);
+        open_window(&mut h);
         let d = h.app.manufacture.as_ref().unwrap();
-        assert!(d.report.is_none() && d.error.is_some());
+        assert!(d.run.is_none() && d.error.is_some());
     }
 }

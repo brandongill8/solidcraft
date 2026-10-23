@@ -7,6 +7,11 @@
 //!   number `O`, `%` delimiters. Every dimension carries a decimal point.
 //! - **Haas**: the same, ending with `G53` moves to the machine home, `O` with five digits.
 //!
+//! Straight runs stay `G1`; a run of short feed moves along one circle (or helix) is written as
+//! a single `G2`/`G3` with `I` and `J`, so round pockets, bores and fillets take a few lines
+//! instead of hundreds. Every dialect uses `G17`, `G90`, `G94` and `G21`; spindle `S M3`/`M5`,
+//! coolant `M8`/`M9` and the end `M30`.
+//!
 //! The text is all ASCII, comments are in parentheses, and numbers have three decimals.
 
 use serde::{Deserialize, Serialize};
@@ -187,6 +192,13 @@ pub fn generate_mapped(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions)
                 }
                 _ => {
                     w.comment(&note);
+                    // The tool changer is reached with the head up at the machine's own Z home.
+                    if dialect == Dialect::Haas {
+                        w.line("G53 G0 Z0.");
+                    } else {
+                        w.line("G91 G28 Z0.");
+                        w.line("G90");
+                    }
                     w.line(&format!("T{} M6", tool.id));
                 }
             }
@@ -246,7 +258,9 @@ fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect, step_lines: &m
     let mut mode: Option<&str> = None;
     let mut feed: Option<f64> = None;
     let mut in_cycle = false;
-    for m in &path.moves {
+    let mut index = 0;
+    while let Some(m) = path.moves.get(index) {
+        index += 1;
         if !matches!(m, Move::Drill(_)) && in_cycle {
             w.line("G80");
             in_cycle = false;
@@ -254,11 +268,21 @@ fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect, step_lines: &m
         }
         // The line this move starts at, once for each step it makes.
         let here = w.count;
+        // A run of short feed moves along one circle is a single G2 or G3.
+        let arc = match (m, at) {
+            (Move::Feed { .. }, Some(start)) => find_arc(start, &path.moves, index - 1),
+            _ => None,
+        };
         let steps = match m {
             Move::Drill(_) => Toolpath { moves: vec![*m] }.expanded().len(),
-            _ => 1,
+            _ => arc.as_ref().map_or(1, |a| a.segments),
         };
         step_lines.extend(std::iter::repeat_n(here, steps));
+        if let Some(a) = arc {
+            emit_arc(w, &a, &mut at, &mut mode, &mut feed);
+            index = index - 1 + a.segments;
+            continue;
+        }
         match m {
             Move::Rapid { to } => {
                 emit(w, "G0", None, *to, &mut at, &mut mode, &mut feed);
@@ -286,6 +310,118 @@ fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect, step_lines: &m
     if in_cycle {
         w.line("G80");
     }
+}
+
+/// Largest distance (mm) of a point of a run from the circle it is written as.
+const ARC_TOLERANCE: f64 = 0.001;
+/// Longest chord turn (radians) and sweep of one arc line; a corner is never an arc.
+const ARC_MAX_STEP: f64 = std::f64::consts::FRAC_PI_3;
+const ARC_MAX_SWEEP: f64 = 300.0 * std::f64::consts::PI / 180.0;
+/// Most moves looked at for one arc.
+const ARC_MAX_MOVES: usize = 720;
+
+/// A circular (or helical) move written as `G2`/`G3`.
+struct Arc {
+    /// How many linear moves it replaces.
+    segments: usize,
+    end: Vec3,
+    /// Centre minus start, in X and Y.
+    i: f64,
+    j: f64,
+    ccw: bool,
+    feed: f64,
+}
+
+fn wrap(a: f64) -> f64 {
+    let t = std::f64::consts::TAU;
+    let mut r = a % t;
+    if r > std::f64::consts::PI {
+        r -= t;
+    } else if r < -std::f64::consts::PI {
+        r += t;
+    }
+    r
+}
+
+/// The longest run of feed moves from `moves[from]` (starting at `start`) that lie on one circle
+/// about a vertical axis, with Z changing evenly along it (a helix) or not at all. Needs at
+/// least three moves, so two chords of a corner never become an arc.
+fn find_arc(start: Vec3, moves: &[Move], from: usize) -> Option<Arc> {
+    let Some(Move::Feed { feed, .. }) = moves.get(from) else { return None };
+    let mut pts = vec![start];
+    for m in moves.iter().skip(from).take(ARC_MAX_MOVES) {
+        match m {
+            Move::Feed { to, feed: f } if (f - feed).abs() < 1e-9 => pts.push(*to),
+            _ => break,
+        }
+    }
+    if pts.len() < 4 {
+        return None;
+    }
+    // The circle through the first three points.
+    let (a, b, c) = (pts[0], pts[1], pts[2]);
+    let d = 2.0 * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
+    if d.abs() < 1e-9 {
+        return None;
+    }
+    let (a2, b2, c2) = (a.x * a.x + a.y * a.y, b.x * b.x + b.y * b.y, c.x * c.x + c.y * c.y);
+    let cx = (a2 * (b.y - c.y) + b2 * (c.y - a.y) + c2 * (a.y - b.y)) / d;
+    let cy = (a2 * (c.x - b.x) + b2 * (a.x - c.x) + c2 * (b.x - a.x)) / d;
+    let r = ((a.x - cx).powi(2) + (a.y - cy).powi(2)).sqrt();
+    if !(r.is_finite() && (0.01..=1.0e5).contains(&r) && cx.is_finite() && cy.is_finite()) {
+        return None;
+    }
+    let angle = |p: Vec3| (p.y - cy).atan2(p.x - cx);
+    let first_turn = wrap(angle(b) - angle(a));
+    if first_turn.abs() < 1e-6 || first_turn.abs() > ARC_MAX_STEP {
+        return None;
+    }
+    let sign = first_turn.signum();
+    let slope = (b.z - a.z) / first_turn;
+    let mut sweep = 0.0;
+    let mut good = 0;
+    for k in 1..pts.len() {
+        let (p, q) = (pts[k - 1], pts[k]);
+        if ((q.x - cx).hypot(q.y - cy) - r).abs() > ARC_TOLERANCE {
+            break;
+        }
+        let turn = wrap(angle(q) - angle(p));
+        if turn * sign <= 1e-6 || turn.abs() > ARC_MAX_STEP || (sweep + turn).abs() > ARC_MAX_SWEEP {
+            break;
+        }
+        sweep += turn;
+        if (q.z - a.z - slope * sweep).abs() > 2.0 * ARC_TOLERANCE {
+            break;
+        }
+        good = k;
+    }
+    if good < 3 {
+        return None;
+    }
+    let end = pts[good];
+    Some(Arc { segments: good, end, i: cx - a.x, j: cy - a.y, ccw: sign > 0.0, feed: *feed })
+}
+
+fn emit_arc(w: &mut Writer, arc: &Arc, at: &mut Option<Vec3>, mode: &mut Option<&str>, feed: &mut Option<f64>) {
+    let g = if arc.ccw { "G3" } else { "G2" };
+    let mut words: Vec<String> = Vec::new();
+    if *mode != Some(g) {
+        words.push(g.to_string());
+        *mode = Some(g);
+    }
+    words.push(format!("X{}", w.n(arc.end.x)));
+    words.push(format!("Y{}", w.n(arc.end.y)));
+    if at.is_none_or(|p| (p.z - arc.end.z).abs() >= 5e-4) {
+        words.push(format!("Z{}", w.n(arc.end.z)));
+    }
+    words.push(format!("I{}", w.n(arc.i)));
+    words.push(format!("J{}", w.n(arc.j)));
+    if feed.is_none_or(|old| (old - arc.feed).abs() > 1e-9) {
+        words.push(format!("F{}", num(arc.feed, false)));
+        *feed = Some(arc.feed);
+    }
+    *at = Some(arc.end);
+    w.line(&words.join(" "));
 }
 
 fn emit(w: &mut Writer, g: &'static str, f: Option<f64>, to: Vec3, at: &mut Option<Vec3>, mode: &mut Option<&str>, feed: &mut Option<f64>) {

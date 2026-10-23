@@ -45,7 +45,7 @@ In scope, in priority order:
 Deferred until further notice: MESH, FORM (T-splines), SURFACE beyond what solids need (scope proposed in #772), PCB / 3D
 PCB / Package, Render, Animation, Simulation, Manufacture/CAM, Drawings.
 
-Manufacture/CAM has an opt-in 2.5D core (eight tool kinds with a saved tool library, setups, face/contour/pocket/drill with plunge, ramp and helical entry, Grbl and Fanuc/Haas posts, stock removal simulation with collision checks) as `manufacture.*` commands, a Manufacture ribbon with a window per tab (toolpaths and the setup's stock drawn over the model) and a Machining Simulation window (docs/manufacture.md).
+Manufacture/CAM has an opt-in 2.5D core (eight tool kinds with a saved tool library, setups, face/contour/pocket/drill with plunge, ramp and helical entry, Grbl and Fanuc/Haas posts, stock removal simulation in real cutting time with the real-size tool, optional collision checks and a G-code follower; G2/G3 arcs in the posts) as `manufacture.*` commands, a Manufacture ribbon with a window per tab (toolpaths and the setup's stock drawn over the model) and a Machining Simulation window (docs/manufacture.md).
 
 ## Milestones
 

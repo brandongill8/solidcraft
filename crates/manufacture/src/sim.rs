@@ -560,7 +560,10 @@ impl Runner {
                 }
             }
             self.step += 1;
-            if self.step % self.every == 0 && self.checkpoints.len() < self.max_checkpoints && self.checkpoints.last().is_none_or(|c| c.step < self.step) {
+            if self.step.is_multiple_of(self.every)
+                && self.checkpoints.len() < self.max_checkpoints
+                && self.checkpoints.last().is_none_or(|c| c.step < self.step)
+            {
                 self.checkpoints.push(Checkpoint { step: self.step, heights: self.heights.clone() });
             }
         }

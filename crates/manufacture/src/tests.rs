@@ -1056,3 +1056,79 @@ fn a_helical_pocket_removes_the_same_material_as_a_ramped_one_without_collisions
     let at = |x: f64, y: f64| helical.heights[((y - g.y0) / g.cell) as usize * g.nx + ((x - g.x0) / g.cell) as usize];
     assert!(near(f64::from(at(8.0, 20.0)), 0.0, 1e-9) && near(f64::from(at(30.0, 20.0)), -4.0, 1e-4));
 }
+
+// ------------------------------------------------------------------------------------------- arcs
+
+fn circle_moves(r: f64, from_deg: f64, to_deg: f64, segs: usize, z: (f64, f64), feed: f64) -> Vec<Move> {
+    (0..=segs)
+        .map(|k| {
+            let f = k as f64 / segs as f64;
+            let a = (from_deg + (to_deg - from_deg) * f).to_radians();
+            Move::Feed { to: Vec3::new(20.0 + r * a.cos(), 15.0 + r * a.sin(), z.0 + (z.1 - z.0) * f), feed }
+        })
+        .collect()
+}
+
+fn post_path(dialect: Dialect, moves: Vec<Move>) -> (String, Vec<usize>) {
+    let (s, t) = (setup(), tool(1, 6.0));
+    let o = contour_op(Side::On, Direction::Climb, 0.0);
+    let path = Toolpath { moves };
+    crate::post::generate_mapped(dialect, &[Step { setup: &s, tool: &t, op: &o, toolpath: &path }], &PostOptions::default()).unwrap()
+}
+
+#[test]
+fn a_run_of_short_moves_on_a_circle_is_written_as_one_arc() {
+    let mut moves = vec![Move::Rapid { to: Vec3::new(30.0, 15.0, 5.0) }, Move::Feed { to: Vec3::new(30.0, 15.0, -2.0), feed: 300.0 }];
+    // A full circle of radius 10 in 72 chords, counter-clockwise.
+    moves.extend(circle_moves(10.0, 0.0, 360.0, 72, (-2.0, -2.0), 300.0).into_iter().skip(1));
+    for dialect in [Dialect::Grbl, Dialect::Fanuc, Dialect::Haas] {
+        let (text, lines) = post_path(dialect, moves.clone());
+        let arcs: Vec<&str> = text.lines().filter(|l| l.starts_with("G3 ") || l.starts_with("G2 ")).collect();
+        assert!(!arcs.is_empty() && arcs.len() <= 3, "{dialect:?}:\n{text}");
+        assert!(arcs.iter().all(|l| l.starts_with("G3 ") && l.contains(" I") && l.contains(" J")), "{arcs:?}");
+        assert!(!text.contains("G1 X"), "no chord left over:\n{text}");
+        // One simulation step per move, and an arc's steps all point at its line.
+        assert_eq!(lines.len(), moves.len());
+        let at = lines[2];
+        assert!(text.lines().nth(at).unwrap().starts_with("G3 "), "line {at}");
+        assert!(lines.windows(2).all(|w| w[0] <= w[1]));
+    }
+}
+
+#[test]
+fn clockwise_circles_are_g2_and_helixes_carry_z() {
+    let cw = circle_moves(8.0, 90.0, -90.0, 40, (-1.0, -1.0), 200.0);
+    let mut moves = vec![Move::Rapid { to: Vec3::new(20.0, 23.0, 5.0) }];
+    moves.extend(cw);
+    let (text, _) = post_path(Dialect::Fanuc, moves);
+    assert!(text.lines().any(|l| l.starts_with("G2 ")), "{text}");
+    let helix = circle_moves(5.0, 0.0, 270.0, 54, (0.0, -3.0), 150.0);
+    let mut moves = vec![Move::Rapid { to: Vec3::new(25.0, 15.0, 5.0) }];
+    moves.extend(helix);
+    let (text, _) = post_path(Dialect::Grbl, moves);
+    let arc = text.lines().find(|l| l.starts_with("G3 ")).expect("a helical arc");
+    assert!(arc.contains(" Z-3"), "{arc}");
+}
+
+#[test]
+fn corners_and_straight_lines_are_never_arcs() {
+    let square = vec![
+        Move::Rapid { to: Vec3::new(0.0, 0.0, 5.0) },
+        Move::Feed { to: Vec3::new(0.0, 0.0, -1.0), feed: 300.0 },
+        Move::Feed { to: Vec3::new(20.0, 0.0, -1.0), feed: 300.0 },
+        Move::Feed { to: Vec3::new(20.0, 20.0, -1.0), feed: 300.0 },
+        Move::Feed { to: Vec3::new(0.0, 20.0, -1.0), feed: 300.0 },
+        Move::Feed { to: Vec3::new(0.0, 0.0, -1.0), feed: 300.0 },
+    ];
+    let (text, _) = post_path(Dialect::Fanuc, square);
+    assert!(!text.lines().any(|l| l.starts_with("G2 ") || l.starts_with("G3 ")), "{text}");
+    let line: Vec<Move> = (0..10).map(|k| Move::Feed { to: Vec3::new(k as f64, 0.0, -1.0), feed: 300.0 }).collect();
+    let (text, _) = post_path(Dialect::Grbl, line);
+    assert!(!text.contains("G2 ") && !text.contains("G3 "));
+    // A change of feed ends an arc.
+    let mut moves = circle_moves(10.0, 0.0, 90.0, 18, (-1.0, -1.0), 300.0);
+    moves.extend(circle_moves(10.0, 90.0, 180.0, 18, (-1.0, -1.0), 200.0).into_iter().skip(1));
+    let (text, lines) = post_path(Dialect::Fanuc, moves.clone());
+    assert!(text.lines().filter(|l| l.starts_with("G3 ")).count() >= 1 && text.contains("F200"), "{text}");
+    assert_eq!(lines.len(), moves.len());
+}

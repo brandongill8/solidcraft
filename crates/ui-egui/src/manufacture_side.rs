@@ -146,40 +146,40 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
         .resizable(false)
         .frame(Container::new(ui.ctx(), Surface::Panel).edge_frame(t.panel).inner_margin(6))
         .show(ui, |ui| {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            section(ui, "Tools", "New tool", Item::Tool, &mut pick, &mut remove, |ui, pick, remove| {
-                for tool in job["tools"].as_array().into_iter().flatten() {
-                    let id = num(tool, "id");
-                    let diameter = tool.get("diameter").and_then(Value::as_f64).unwrap_or(0.0);
-                    let label = format!("T{id}  {}  \u{2300}{diameter} mm", text(tool, "name"));
-                    row(ui, &label, crate::i18n::tr_label(tool_kind(tool)), false, (Item::Tool, id), pick, remove);
-                }
-                if job["tools"].as_array().is_none_or(Vec::is_empty) {
-                    ui.label(RichText::new("No tools yet").color(t.text_dim));
-                }
-            });
-            section(ui, "Setups", "New setup", Item::Setup, &mut pick, &mut remove, |ui, pick, remove| {
-                for setup in job["setups"].as_array().into_iter().flatten() {
-                    let id = num(setup, "id");
-                    row(ui, &format!("{id}  {}", text(setup, "name")), "", false, (Item::Setup, id), pick, remove);
-                }
-                if job["setups"].as_array().is_none_or(Vec::is_empty) {
-                    ui.label(RichText::new("No setups yet").color(t.text_dim));
-                }
-            });
-            section(ui, "Operations", "New operation", Item::Operation, &mut pick, &mut remove, |ui, pick, remove| {
-                for (i, op) in job["operations"].as_array().into_iter().flatten().enumerate() {
-                    let id = num(op, "id");
-                    let label = format!("{}  {}  {}", i + 1, text(op, "name"), crate::i18n::tr_label(op_kind(op)));
-                    let hint = format!("T{}, setup {}", num(op, "tool"), num(op, "setup"));
-                    row(ui, &label, &hint, focus == Some(id), (Item::Operation, id), pick, remove);
-                }
-                if job["operations"].as_array().is_none_or(Vec::is_empty) {
-                    ui.label(RichText::new("No operations yet").color(t.text_dim));
-                }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                section(ui, "Tools", "New tool", Item::Tool, &mut pick, &mut remove, |ui, pick, remove| {
+                    for tool in job["tools"].as_array().into_iter().flatten() {
+                        let id = num(tool, "id");
+                        let diameter = tool.get("diameter").and_then(Value::as_f64).unwrap_or(0.0);
+                        let label = format!("T{id}  {}  \u{2300}{diameter} mm", text(tool, "name"));
+                        row(ui, &label, crate::i18n::tr_label(tool_kind(tool)), false, (Item::Tool, id), pick, remove);
+                    }
+                    if job["tools"].as_array().is_none_or(Vec::is_empty) {
+                        ui.label(RichText::new("No tools yet").color(t.text_dim));
+                    }
+                });
+                section(ui, "Setups", "New setup", Item::Setup, &mut pick, &mut remove, |ui, pick, remove| {
+                    for setup in job["setups"].as_array().into_iter().flatten() {
+                        let id = num(setup, "id");
+                        row(ui, &format!("{id}  {}", text(setup, "name")), "", false, (Item::Setup, id), pick, remove);
+                    }
+                    if job["setups"].as_array().is_none_or(Vec::is_empty) {
+                        ui.label(RichText::new("No setups yet").color(t.text_dim));
+                    }
+                });
+                section(ui, "Operations", "New operation", Item::Operation, &mut pick, &mut remove, |ui, pick, remove| {
+                    for (i, op) in job["operations"].as_array().into_iter().flatten().enumerate() {
+                        let id = num(op, "id");
+                        let label = format!("{}  {}  {}", i + 1, text(op, "name"), crate::i18n::tr_label(op_kind(op)));
+                        let hint = format!("T{}, setup {}", num(op, "tool"), num(op, "setup"));
+                        row(ui, &label, &hint, focus == Some(id), (Item::Operation, id), pick, remove);
+                    }
+                    if job["operations"].as_array().is_none_or(Vec::is_empty) {
+                        ui.label(RichText::new("No operations yet").color(t.text_dim));
+                    }
+                });
             });
         });
-    });
     crate::scenario::publish_rect("manufacture:panel", response.response.rect);
     if let Some((item, id)) = remove {
         let (command, key) = match item {
