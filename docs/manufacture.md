@@ -133,3 +133,9 @@ Arcs are emitted as short G1 segments (chord error 0.005 mm by default, `toleran
 or 3D surfacing. The simulation does not model undercuts, tool holders or fixtures, and checks
 the tool only against the stock and the model. Sizes and work are capped, and bad numbers are
 errors, never panics.
+
+## History, side panel and simulation controls
+
+In the Manufacture workspace the bottom strip is the **Manufacture history**: the setups and then the operations in the order the program runs them; a click opens the entry in its window. The panel on the right lists the tools that were built, the setups and the operations, each with a New button, a click to edit and a delete button. The workspace switcher shows Manufacture while this tab is open.
+
+The Machining Simulation window has a **Speed** slider (1x runs the whole program in about five seconds), a **Drawing detail** choice (Draft to Smooth: how many cells the stock is drawn with; the stock is shaded smoothly across cells) and **Check resolution**, the cell size of the gouge and volume check, which does not change the drawing.
