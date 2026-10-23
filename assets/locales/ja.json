@@ -2022,5 +2022,19 @@
   "update.up_to_date": "SolidCraft は最新です。",
   "update.update_now": "今すぐ更新",
   "update.you_have": "現在のバージョンは {version} です。",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 選択 · Enter / Tab 補完 · Esc 閉じる"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 選択 · Enter / Tab 補完 · Esc 閉じる",
+  "ui.sim_cells_draft": "下書き品質のセル数",
+  "ui.sim_cells_normal": "標準品質のセル数",
+  "ui.sim_cells_fine": "高精細品質のセル数",
+  "ui.sim_cells_smooth": "滑らか品質のセル数",
+  "ui.sim_detail": "開始時の品質(0 下書き〜3 滑らか)",
+  "ui.sim_finest_cell": "描画の最小セル",
+  "ui.sim_play_seconds": "プログラム全体の再生秒数",
+  "ui.sim_rapid_rate": "時間計算の早送り速度",
+  "ui.sim_spin_cap": "画面での工具の最高回転",
+  "ui.sim_check_resolution": "干渉チェックのセル",
+  "ui.sim_show_stock": "ストックを表示",
+  "ui.sim_show_path": "ツールパスを表示",
+  "ui.sim_show_tool": "工具を表示",
+  "ui.sim_check_collisions": "干渉をチェック"
 }

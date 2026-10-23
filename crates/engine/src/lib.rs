@@ -33,12 +33,13 @@ use serde_json::Value;
 use solidcraft_doc::{Document, Model, ModelState};
 use solidcraft_geom::Vec3;
 
-pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command};
+pub use cmd::{CommandInfo, CommandSpec, WatchRun, auto_operation, command_specs, extrude_reach, find_command, watch_run};
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
 pub use solidcraft_io as io;
 pub use solidcraft_kernel as kernel;
+pub use solidcraft_manufacture as manufacture;
 pub use solidcraft_render as render;
 pub use solidcraft_sketch as sketch;
 

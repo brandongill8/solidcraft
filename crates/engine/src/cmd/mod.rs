@@ -46,6 +46,7 @@ mod interference;
 pub(crate) mod joints;
 mod libraries;
 mod manufacture;
+pub use manufacture::{WatchRun, watch_run};
 mod manufacture_library;
 mod material_properties;
 mod materials;

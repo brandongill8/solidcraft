@@ -370,6 +370,203 @@ pub fn simulate(stock: &Stock, part: Option<&Part>, ops: &[SimOp], opts: &SimOpt
     })
 }
 
+/// One move of a run, in work coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunSeg {
+    pub from: Vec3,
+    pub to: Vec3,
+    pub rapid: bool,
+    /// Feed (mm/min) of a cutting move; 0 for a rapid.
+    pub feed: f64,
+    /// Index into [`Runner::operations`].
+    pub op: usize,
+}
+
+/// An operation of a run.
+#[derive(Clone, Debug)]
+pub struct RunOp {
+    pub operation: u32,
+    pub tool: Tool,
+    /// First move number of the operation and how many moves it has.
+    pub first_step: usize,
+    pub steps: usize,
+}
+
+struct Checkpoint {
+    step: usize,
+    heights: Vec<f32>,
+}
+
+/// Memory kept for saved points of a run (bytes).
+const CHECKPOINT_BYTES: usize = 96_000_000;
+
+/// A stock-removal run to watch: it moves forward move by move and goes back to a saved point,
+/// instead of starting over for every position of a scrubber. It only cuts (no part, no
+/// collision checks), so it can run on a grid as fine as the picture needs.
+pub struct Runner {
+    grid: Grid,
+    floor: f64,
+    top: f64,
+    ops: Vec<RunOp>,
+    segs: Vec<RunSeg>,
+    /// Seconds from the start to the end of each move.
+    times: Vec<f64>,
+    heights: Vec<f32>,
+    step: usize,
+    checkpoints: Vec<Checkpoint>,
+    every: usize,
+    max_checkpoints: usize,
+}
+
+impl Runner {
+    /// A run of `ops` (one setup) over `stock` on cells of about `cell` mm. `rapid_rate` is the
+    /// machine's rapid speed (mm/min) for the times.
+    pub fn new(stock: &Stock, ops: &[SimOp], cell: f64, clearance: f64, rapid_rate: f64) -> Result<Runner> {
+        let grid = Grid::new(stock, cell)?;
+        finite(clearance, "the clearance height")?;
+        let rate = if rapid_rate.is_finite() && rapid_rate > 0.0 { rapid_rate } else { 5000.0 };
+        let (floor, top) = (stock.min[2], stock.max[2]);
+        let mut segs: Vec<RunSeg> = Vec::new();
+        let mut run_ops = Vec::with_capacity(ops.len());
+        let mut times: Vec<f64> = Vec::new();
+        let (mut clock, mut work) = (0.0f64, 0.0f64);
+        for (index, op) in ops.iter().enumerate() {
+            op.tool.validate()?;
+            let moves = op.toolpath.expanded();
+            let first_step = segs.len();
+            let Some(first) = moves.iter().find_map(|m| match m {
+                Move::Rapid { to } | Move::Feed { to, .. } => Some(*to),
+                Move::Drill(_) => None,
+            }) else {
+                run_ops.push(RunOp { operation: op.operation, tool: op.tool.clone(), first_step, steps: 0 });
+                continue;
+            };
+            let footprint = {
+                let side = 2.0 * op.tool.radius().max(op.tool.shank_radius()) / grid.cell + 1.0;
+                side * side
+            };
+            let mut at = Vec3::new(first.x, first.y, clearance.max(first.z));
+            for m in &moves {
+                let (to, rapid, feed) = match m {
+                    Move::Rapid { to } => (*to, true, 0.0),
+                    Move::Feed { to, feed } => (*to, false, *feed),
+                    Move::Drill(_) => continue,
+                };
+                if !to.is_finite() || to.x.abs() > MAX_COORD || to.y.abs() > MAX_COORD || to.z.abs() > MAX_COORD {
+                    return invalid("a toolpath move has a number that is not finite or is out of range");
+                }
+                let len = at.dist(to);
+                if !(at.z >= top && to.z >= top) {
+                    work += (len / (grid.cell * 0.5)).ceil().max(1.0) * footprint;
+                }
+                if work > MAX_WORK {
+                    return Err(ManufactureError::Limit("the toolpaths are too long for this resolution; use a coarser one".into()));
+                }
+                let speed = if rapid { rate } else { feed };
+                if speed > 0.0 {
+                    clock += len / (speed / 60.0);
+                }
+                times.push(clock);
+                segs.push(RunSeg { from: at, to, rapid, feed, op: index });
+                at = to;
+            }
+            run_ops.push(RunOp { operation: op.operation, tool: op.tool.clone(), first_step, steps: segs.len() - first_step });
+        }
+        let cells = grid.cells();
+        let max_checkpoints = (CHECKPOINT_BYTES / (cells.max(1) * 4)).clamp(2, 40);
+        let every = (segs.len() / max_checkpoints).max(1);
+        Ok(Runner {
+            heights: vec![top as f32; cells],
+            grid,
+            floor,
+            top,
+            ops: run_ops,
+            segs,
+            times,
+            step: 0,
+            checkpoints: Vec::new(),
+            every,
+            max_checkpoints,
+        })
+    }
+
+    pub fn grid(&self) -> &Grid {
+        &self.grid
+    }
+    /// The stock top per cell after [`Runner::step`] moves, row by row from the low corner.
+    pub fn heights(&self) -> &[f32] {
+        &self.heights
+    }
+    pub fn step(&self) -> usize {
+        self.step
+    }
+    pub fn total(&self) -> usize {
+        self.segs.len()
+    }
+    pub fn operations(&self) -> &[RunOp] {
+        &self.ops
+    }
+    pub fn segments(&self) -> &[RunSeg] {
+        &self.segs
+    }
+    /// Seconds from the start to the end of each move.
+    pub fn times(&self) -> &[f64] {
+        &self.times
+    }
+    /// Seconds of the whole run.
+    pub fn duration(&self) -> f64 {
+        self.times.last().copied().unwrap_or(0.0)
+    }
+    /// How many moves are done at `seconds` (the move being run counts when it is under way).
+    pub fn step_at(&self, seconds: f64) -> usize {
+        self.times.partition_point(|t| *t <= seconds)
+    }
+    /// The volume cut away so far (mm³).
+    pub fn removed(&self) -> f64 {
+        let a = self.grid.cell * self.grid.cell;
+        self.heights.iter().map(|h| (self.top - f64::from(*h).clamp(self.floor, self.top)) * a).sum()
+    }
+
+    /// Runs (or goes back) to `until` moves done.
+    pub fn advance(&mut self, until: usize) {
+        let until = until.min(self.segs.len());
+        if until < self.step {
+            match self.checkpoints.iter().rev().find(|c| c.step <= until) {
+                Some(c) => {
+                    self.heights.clone_from(&c.heights);
+                    self.step = c.step;
+                }
+                None => {
+                    self.heights.fill(self.top as f32);
+                    self.step = 0;
+                }
+            }
+        }
+        let mut coll = Collector { list: Vec::new(), counts: [0; 4] };
+        let mut cutter: Option<(usize, Cutter)> = None;
+        while self.step < until {
+            let Some(seg) = self.segs.get(self.step).copied() else { break };
+            if !(seg.from.z >= self.top && seg.to.z >= self.top) {
+                if cutter.as_ref().is_none_or(|(o, _)| *o != seg.op) {
+                    cutter = self.ops.get(seg.op).map(|o| (seg.op, Cutter::new(&o.tool, self.grid.cell)));
+                }
+                if let Some((_, c)) = &cutter {
+                    let n = (seg.from.dist(seg.to) / (self.grid.cell * 0.5)).ceil().max(1.0);
+                    let count = n as usize;
+                    for k in 1..=count {
+                        let p = seg.from + (seg.to - seg.from) * (k as f64 / n);
+                        stamp(&self.grid, &mut self.heights, self.floor, None, c, p, seg.rapid, Mode::Cut, 0.0, (0, self.step), &mut coll);
+                    }
+                }
+            }
+            self.step += 1;
+            if self.step % self.every == 0 && self.checkpoints.len() < self.max_checkpoints && self.checkpoints.last().is_none_or(|c| c.step < self.step) {
+                self.checkpoints.push(Checkpoint { step: self.step, heights: self.heights.clone() });
+            }
+        }
+    }
+}
+
 /// A tool as the sweep sees it.
 struct Cutter<'a> {
     tool: &'a Tool,

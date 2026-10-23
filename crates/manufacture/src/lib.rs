@@ -28,8 +28,8 @@ pub use error::{ManufactureError, Result};
 pub use job::{Direction, DrillPoints, Entry, EntryMode, Job, OpKind, Operation, Setup, Side, Source, Stock};
 pub use path::{DrillCycle, Move, Stats, Toolpath};
 pub use plan::{DEFAULT_TOLERANCE, Geometry, Plan, Site, circle_of, circle_sites, levels, plan, region_to_work};
-pub use post::{Dialect, PostOptions, Step, generate};
-pub use sim::{Collision, CollisionKind, Grid, Part, SimOp, SimOptions, Simulation, Surface, Volumes, simulate};
+pub use post::{Dialect, PostOptions, Step, generate, generate_mapped};
+pub use sim::{Collision, CollisionKind, Grid, Part, RunOp, RunSeg, Runner, SimOp, SimOptions, Simulation, Surface, Volumes, simulate};
 pub use tool::{Tool, ToolKind};
 
 #[cfg(test)]

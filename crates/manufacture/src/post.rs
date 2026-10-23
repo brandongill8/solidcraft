@@ -101,10 +101,13 @@ struct Writer {
     out: String,
     n: u32,
     numbered: bool,
+    /// Lines written so far.
+    count: usize,
 }
 
 impl Writer {
     fn line(&mut self, text: &str) {
+        self.count += 1;
         if self.numbered && !text.is_empty() && !text.starts_with('%') && !text.starts_with('O') {
             self.n += 10;
             self.out.push_str(&format!("N{} ", self.n));
@@ -123,6 +126,13 @@ impl Writer {
 
 /// The G-code for `steps`, in order.
 pub fn generate(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions) -> Result<String> {
+    generate_mapped(dialect, steps, opts).map(|(text, _)| text)
+}
+
+/// The program, and for every move of the toolpaths (drilling cycles spelled out, all steps in
+/// order: the numbering of [`crate::sim::Runner`]) the number of the program line (from 0) that
+/// does it.
+pub fn generate_mapped(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions) -> Result<(String, Vec<usize>)> {
     if steps.is_empty() {
         return invalid("there is nothing to post: the job has no operations");
     }
@@ -137,7 +147,8 @@ pub fn generate(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions) -> Res
             }
         }
     }
-    let mut w = Writer { dialect, out: String::new(), n: 0, numbered: opts.line_numbers && dialect != Dialect::Grbl };
+    let mut w = Writer { dialect, out: String::new(), n: 0, numbered: opts.line_numbers && dialect != Dialect::Grbl, count: 0 };
+    let mut step_lines: Vec<usize> = Vec::new();
     match dialect {
         Dialect::Grbl => {
             w.comment(&opts.program_name);
@@ -198,7 +209,7 @@ pub fn generate(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions) -> Res
         if op.coolant {
             w.line("M8");
         }
-        write_moves(&mut w, s.toolpath, dialect);
+        write_moves(&mut w, s.toolpath, dialect, &mut step_lines);
         if op.coolant {
             w.line("M9");
         }
@@ -224,12 +235,12 @@ pub fn generate(dialect: Dialect, steps: &[Step<'_>], opts: &PostOptions) -> Res
             w.line("%");
         }
     }
-    Ok(w.out)
+    Ok((w.out, step_lines))
 }
 
 /// Modal output of one toolpath: G words and feeds only when they change, axes only when they
-/// move.
-fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect) {
+/// move. `step_lines` gets the line each step starts at.
+fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect, step_lines: &mut Vec<usize>) {
     let canned = !matches!(dialect, Dialect::Grbl);
     let mut at: Option<Vec3> = None;
     let mut mode: Option<&str> = None;
@@ -241,6 +252,13 @@ fn write_moves(w: &mut Writer, path: &Toolpath, dialect: Dialect) {
             in_cycle = false;
             mode = None;
         }
+        // The line this move starts at, once for each step it makes.
+        let here = w.count;
+        let steps = match m {
+            Move::Drill(_) => Toolpath { moves: vec![*m] }.expanded().len(),
+            _ => 1,
+        };
+        step_lines.extend(std::iter::repeat_n(here, steps));
         match m {
             Move::Rapid { to } => {
                 emit(w, "G0", None, *to, &mut at, &mut mode, &mut feed);

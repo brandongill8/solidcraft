@@ -209,9 +209,9 @@ pub fn nav_preset(id: &str) -> &'static NavPreset {
     NAV_PRESETS.iter().find(|p| p.id == id).unwrap_or(&NAV_PRESETS[0])
 }
 /// The dialog's pages, in order.
-pub const PAGES: [&str; 9] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI", "Plugins"];
+pub const PAGES: [&str; 10] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI", "Plugins", "Simulation"];
 // Keep every existing page and its scenario identity; only their presentation is shared.
-const WINDOW_PAGES: [ui_kit::WindowPage<SolveApp>; 9] = [
+const WINDOW_PAGES: [ui_kit::WindowPage<SolveApp>; 10] = [
     ui_kit::WindowPage { icon: "settings", label: "ui.general", handle: "prefs:page:General", scroll: true, draw: window_page::<0> },
     ui_kit::WindowPage { icon: "orbit", label: "ui.navigation", handle: "prefs:page:Navigation", scroll: true, draw: window_page::<1> },
     ui_kit::WindowPage {
@@ -227,6 +227,7 @@ const WINDOW_PAGES: [ui_kit::WindowPage<SolveApp>; 9] = [
     ui_kit::WindowPage { icon: "select", label: "ui.selection", handle: "prefs:page:Selection", scroll: true, draw: window_page::<6> },
     ui_kit::WindowPage { icon: "assistant", label: "ui.ai_button", handle: "prefs:page:AI", scroll: true, draw: window_page::<7> },
     ui_kit::WindowPage { icon: "library", label: "ui.plugins", handle: "prefs:page:Plugins", scroll: true, draw: window_page::<8> },
+    ui_kit::WindowPage { icon: "settings", label: "ui.simulation", handle: "prefs:page:Simulation", scroll: true, draw: window_page::<9> },
 ];
 
 fn window_page<const INDEX: usize>(ui: &mut egui::Ui, app: &mut SolveApp) {
@@ -239,6 +240,7 @@ fn window_page<const INDEX: usize>(ui: &mut egui::Ui, app: &mut SolveApp) {
 
 pub const PAGE_AI: usize = 7;
 pub const PAGE_PLUGINS: usize = 8;
+pub const PAGE_SIMULATION: usize = 9;
 pub const PAGE_SHORTCUTS: usize = 2;
 pub const PAGE_DESIGN: usize = 3;
 pub const PAGE_GRAPHICS: usize = 4;
@@ -436,6 +438,28 @@ preference_settings! {
     /// View changes (axis view, Look At, Home) animate; `look_at_speed` scales how fast.
     look_at_anim: bool = true, 1 => check("Animate view changes", "Axis view, Look At, Home and Fit");
     look_at_speed: f32 = 1.0, 1, accept(0.25..=4.0) => enabled_slider(look_at_anim, "Animation speed", 0.5..=3.0, 0.25, |v| format!("{v:.2}×"));
+    /// Machining Simulation: how many cells the stock is drawn with at each Drawing detail.
+    sim_cells_draft: u32 = 20_000, PAGE_SIMULATION, accept(1_000..=2_000_000) => number("ui.sim_cells_draft", 1_000..=2_000_000);
+    sim_cells_normal: u32 = 60_000, PAGE_SIMULATION, accept(1_000..=2_000_000) => number("ui.sim_cells_normal", 1_000..=2_000_000);
+    sim_cells_fine: u32 = 150_000, PAGE_SIMULATION, accept(1_000..=2_000_000) => number("ui.sim_cells_fine", 1_000..=2_000_000);
+    sim_cells_smooth: u32 = 300_000, PAGE_SIMULATION, accept(1_000..=2_000_000) => number("ui.sim_cells_smooth", 1_000..=2_000_000);
+    /// The Drawing detail a new simulation starts on (0 Draft, 1 Normal, 2 Fine, 3 Smooth).
+    sim_detail: u8 = 2, PAGE_SIMULATION, accept(0..=3) => number("ui.sim_detail", 0..=3);
+    /// The smallest cell the stock drawing uses (mm), however many cells are asked for.
+    sim_finest_cell: f32 = 0.02, PAGE_SIMULATION, accept(0.005..=1.0) => slider("ui.sim_finest_cell", 0.005..=0.5, 0.005, |v| format!("{v:.3} mm"), "prefs:sim_finest");
+    /// How long the whole program takes to play at the speed a simulation starts with (seconds).
+    sim_play_seconds: f32 = 20.0, PAGE_SIMULATION, accept(1.0..=600.0) => slider("ui.sim_play_seconds", 2.0..=120.0, 1.0, |v| format!("{v:.0} s"), "prefs:sim_play");
+    /// The machine's rapid speed used for the cutting time (mm/min).
+    sim_rapid_rate: f32 = 5000.0, PAGE_SIMULATION, accept(100.0..=100_000.0) => slider("ui.sim_rapid_rate", 500.0..=30000.0, 500.0, |v| format!("{v:.0} mm/min"), "prefs:sim_rapid");
+    /// The fastest the tool turns in the picture (revolutions a second; 0 keeps it still).
+    sim_spin_cap: f32 = 3.0, PAGE_SIMULATION, accept(0.0..=30.0) => slider("ui.sim_spin_cap", 0.0..=10.0, 0.5, |v| format!("{v:.1} rev/s"), "prefs:sim_spin");
+    /// The cell size of the collision check a simulation starts with (mm).
+    sim_check_resolution: f32 = 0.5, PAGE_SIMULATION, accept(0.01..=10.0) => slider("ui.sim_check_resolution", 0.05..=5.0, 0.05, |v| format!("{v:.2} mm"), "prefs:sim_check");
+    /// What a new simulation shows.
+    sim_show_stock: bool = true, PAGE_SIMULATION => check_tr("ui.sim_show_stock");
+    sim_show_path: bool = true, PAGE_SIMULATION => check_tr("ui.sim_show_path");
+    sim_show_tool: bool = true, PAGE_SIMULATION => check_tr("ui.sim_show_tool");
+    sim_check_collisions: bool = false, PAGE_SIMULATION => check_tr("ui.sim_check_collisions");
     /// Default modelling orientation: `z` (Z up) or `y` (Y up) (#3).
     up_axis: String = "z".into(), PAGE_DESIGN;
     /// After a STEP or IGES file opens, offer to stand a Y-up part up (`stand_up`).
@@ -1086,6 +1110,16 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
         return;
     }
     match app.prefs_window.section {
+        PAGE_SIMULATION => {
+            for draw in [
+                setting::sim_cells_draft, setting::sim_cells_normal, setting::sim_cells_fine, setting::sim_cells_smooth,
+                setting::sim_detail, setting::sim_finest_cell, setting::sim_play_seconds, setting::sim_rapid_rate,
+                setting::sim_spin_cap, setting::sim_show_stock, setting::sim_show_path, setting::sim_show_tool,
+                setting::sim_check_collisions, setting::sim_check_resolution,
+            ] {
+                draw(app, ui);
+            }
+        }
         0 => {
             ui_kit::row(ui, app.tr("ui.language"), |ui| {
                 ui_kit::dropdown_menu(ui, "pref_language", crate::i18n::Locale::for_language(&app.preferences.language).name(), |ui| {

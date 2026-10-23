@@ -2022,5 +2022,19 @@
   "update.up_to_date": "SolidCraft is up to date.",
   "update.update_now": "Update now",
   "update.you_have": "You have {version}.",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ choose · Enter / Tab complete · Esc dismiss"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ choose · Enter / Tab complete · Esc dismiss",
+  "ui.sim_cells_draft": "Draft detail: cells",
+  "ui.sim_cells_normal": "Normal detail: cells",
+  "ui.sim_cells_fine": "Fine detail: cells",
+  "ui.sim_cells_smooth": "Smooth detail: cells",
+  "ui.sim_detail": "Starting detail (0 Draft to 3 Smooth)",
+  "ui.sim_finest_cell": "Finest cell of the drawing",
+  "ui.sim_play_seconds": "Seconds to play a whole program",
+  "ui.sim_rapid_rate": "Rapid speed for the time",
+  "ui.sim_spin_cap": "Fastest tool turn in the picture",
+  "ui.sim_check_resolution": "Collision check cell",
+  "ui.sim_show_stock": "Show the stock",
+  "ui.sim_show_path": "Show the toolpath",
+  "ui.sim_show_tool": "Show the tool",
+  "ui.sim_check_collisions": "Check collisions"
 }

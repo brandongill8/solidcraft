@@ -86,6 +86,7 @@ mod manage_dialogs_tests;
 pub mod manufacture_job;
 pub mod manufacture_panel;
 pub mod manufacture_side;
+pub mod manufacture_tool_view;
 mod material_card_review;
 
 #[cfg(test)]

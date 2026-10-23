@@ -41,7 +41,7 @@ CommandSpec::new("manufacture.operation.delete", "Delete Operation", operation_d
 CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).icon("measure").noundo().at("MANUFACTURE", "OPERATIONS")
     .params("operation: number, moves?: false (list the moves; `limit`: at most 5000 by default, 200000 at most; `expanded`: drilling cycles as plain moves, as `manufacture.simulate` numbers them), tolerance?: 0.005 (chord error of curves, mm), rapid_rate?: 10000 (mm/min, for the time estimate). Returns {operation, kind, moves, stats: {rapid_length, feed_length, minutes, min, max}, warnings}. Does not change the design."),
 CommandSpec::new("manufacture.post", "Post Process", post).icon("export").noundo().at("MANUFACTURE", "OUTPUT")
-    .params("dialect: grbl|fanuc|haas, operations?: [numbers] (all, in order), program_name?, program_number?: 1001 (Fanuc/Haas O number), line_numbers?: false, tolerance?: 0.005, path?: write the program there (an existing file is kept unless overwrite: true), overwrite?: false. Returns {dialect, operations, lines, bytes, warnings} and the program text as `gcode` unless it was written to `path`. Does not change the design."),
+    .params("dialect: grbl|fanuc|haas, operations?: [numbers] (all, in order), program_name?, program_number?: 1001 (Fanuc/Haas O number), line_numbers?: false, map_steps?: false (also return `step_lines`: the program line each move of the simulation runs from), tolerance?: 0.005, path?: write the program there (an existing file is kept unless overwrite: true), overwrite?: false. Returns {dialect, operations, lines, bytes, warnings} and the program text as `gcode` unless it was written to `path`. Does not change the design."),
 CommandSpec::new("manufacture.simulate", "Simulate Machining", simulate).icon("play").noundo().at("MANUFACTURE", "OUTPUT")
     .params("setup?: number (the first setup), operations?: [numbers] (all in the setup, in order), resolution?: 0.5 (cell size, mm), tolerance? (how deep an overlap counts as a collision, mm; default one cell, at least 0.05), until?: move number to stop after, part?: true (check against the model's bodies; false: stock only), bodies?: [names] (default all), surface?: max cells of the stock surface to return for drawing (0/omitted: none; at most 250000), tolerance_chord?: 0.005. Cuts the setup's stock away along the toolpaths (a height map) and reports gouges into the model, shank hits (tool.flute_length), rapids through stock or the model, and cuts below the stock, with volumes removed and left over. Returns {setup, frame, grid, steps, total_steps, operations: [{operation, first_step}], volumes, counts, collisions, open_cells, tolerance, surface?}. Does not change the design. See docs/manufacture.md"),
 ];
@@ -388,7 +388,7 @@ fn post(s: &mut Session, p: &Value) -> Result<Value> {
             n.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n <= 99_999).ok_or_else(|| bad(cmd, "`program_number` is 0 to 99999"))?;
     }
     opts.line_numbers = p.get("line_numbers").and_then(Value::as_bool).unwrap_or(false);
-    let text = mf::generate(dialect, &steps, &opts).map_err(|e| bad(cmd, e.to_string()))?;
+    let (text, step_lines) = mf::generate_mapped(dialect, &steps, &opts).map_err(|e| bad(cmd, e.to_string()))?;
     let mut out = json!({
         "dialect": dialect,
         "operations": ids,
@@ -396,6 +396,10 @@ fn post(s: &mut Session, p: &Value) -> Result<Value> {
         "bytes": text.len(),
         "warnings": warnings,
     });
+    // For following the program along a simulation: the line each move of it is run from.
+    if p.get("map_steps").and_then(Value::as_bool).unwrap_or(false) {
+        out["step_lines"] = json!(step_lines);
+    }
     match p.get("path") {
         Some(Value::String(path)) => {
             if path.is_empty() || path.len() > 4096 || path.chars().any(char::is_control) {
@@ -421,6 +425,49 @@ fn post(s: &mut Session, p: &Value) -> Result<Value> {
         }
     }
     Ok(out)
+}
+
+/// A run of the job's operations to watch: the stock being cut away move by move.
+pub struct WatchRun {
+    pub runner: mf::Runner,
+    /// Work coordinates to model coordinates: origin and the X, Y and Z axes.
+    pub frame: [solidcraft_geom::Vec3; 4],
+    pub stock: mf::Stock,
+    pub setup: u32,
+    /// Spindle speed of each operation of the runner (rpm).
+    pub rpm: Vec<f64>,
+}
+
+/// Plans the operations of a setup (the first one when `setup` is `None`) and sets up the stock
+/// to be cut on cells of about `cell` mm. Does not change the design.
+pub fn watch_run(s: &mut Session, setup: Option<u32>, cell: f64, rapid_rate: f64) -> Result<WatchRun> {
+    let cmd = "manufacture.simulate";
+    let job = s.doc.manufacture.clone();
+    let setup_id = match setup {
+        Some(id) => id,
+        None => job.setups.first().map(|x| x.id).ok_or_else(|| bad(cmd, "the job has no setup"))?,
+    };
+    let setup = job.setup(setup_id).ok_or_else(|| bad(cmd, format!("there is no setup {setup_id}")))?;
+    let stock = setup.stock.ok_or_else(|| bad(cmd, format!("setup {setup_id} has no stock: give it `stock` {{min, max}} to simulate")))?;
+    let ids: Vec<u32> = job.operations.iter().filter(|o| o.setup == setup_id).map(|o| o.id).collect();
+    if ids.is_empty() {
+        return Err(bad(cmd, format!("setup {setup_id} has no operations to simulate")));
+    }
+    let mut planned = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let op = job.operation(*id).ok_or_else(|| bad(cmd, format!("there is no operation {id}")))?;
+        let tool = job.tool(op.tool).ok_or_else(|| bad(cmd, format!("operation {id} uses tool {}, which is not in the library", op.tool)))?;
+        planned.push((op, tool, plan_operation(s, &job, op, mf::DEFAULT_TOLERANCE, cmd)?));
+    }
+    let ops: Vec<mf::SimOp> = planned.iter().map(|(op, tool, plan)| mf::SimOp { operation: op.id, tool, toolpath: &plan.toolpath }).collect();
+    let runner = mf::Runner::new(&stock, &ops, cell, setup.clearance, rapid_rate).map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(WatchRun {
+        runner,
+        frame: [setup.frame.origin, setup.frame.x, setup.frame.y, setup.tool_axis()],
+        stock,
+        setup: setup_id,
+        rpm: planned.iter().map(|(op, _, _)| op.spindle_rpm).collect(),
+    })
 }
 
 /// Most triangles taken from the model for the part.

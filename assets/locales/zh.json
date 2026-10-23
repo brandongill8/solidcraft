@@ -2022,5 +2022,19 @@
   "update.up_to_date": "SolidCraft 已是最新版本。",
   "update.update_now": "立即更新",
   "update.you_have": "当前版本为 {version}。",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 选择 · Enter / Tab 补全 · Esc 关闭"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 选择 · Enter / Tab 补全 · Esc 关闭",
+  "ui.sim_cells_draft": "草稿细节:单元数",
+  "ui.sim_cells_normal": "标准细节:单元数",
+  "ui.sim_cells_fine": "精细细节:单元数",
+  "ui.sim_cells_smooth": "平滑细节:单元数",
+  "ui.sim_detail": "起始细节(0 草稿到 3 平滑)",
+  "ui.sim_finest_cell": "绘制的最小单元",
+  "ui.sim_play_seconds": "播放整个程序的秒数",
+  "ui.sim_rapid_rate": "时间计算的快速移动速度",
+  "ui.sim_spin_cap": "画面中刀具最高转速",
+  "ui.sim_check_resolution": "碰撞检查单元",
+  "ui.sim_show_stock": "显示毛坯",
+  "ui.sim_show_path": "显示刀路",
+  "ui.sim_show_tool": "显示刀具",
+  "ui.sim_check_collisions": "检查碰撞"
 }
