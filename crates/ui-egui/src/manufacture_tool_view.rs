@@ -101,7 +101,8 @@ impl View<'_> {
 }
 
 fn steel(lit: f32) -> Color32 {
-    let (dark, light) = (Color32::from_rgb(78, 86, 98), Color32::from_rgb(205, 212, 222));
+    let t = crate::theme::Tokens::get();
+    let (dark, light) = (t.text_dim.gamma_multiply(0.6), t.text);
     dark.lerp_to_gamma(light, 0.2 + 0.8 * lit)
 }
 
@@ -189,7 +190,7 @@ fn flutes(v: &View, tool: &Tool, angle: f64) {
         let mut run: Vec<Pos2> = Vec::new();
         let flush = |run: &mut Vec<Pos2>| {
             if run.len() > 1 {
-                v.painter.add(Shape::line(std::mem::take(run), Stroke::new(1.6, Color32::from_rgb(38, 42, 50))));
+                v.painter.add(Shape::line(std::mem::take(run), Stroke::new(1.6, crate::theme::Tokens::get().body_edge)));
             }
             run.clear();
         };
@@ -215,7 +216,8 @@ fn inserts(v: &View, tool: &Tool, angle: f64) {
     let height = (cutting_length(tool) * 0.7).max(1.0);
     let width = (big * 0.16).clamp(2.0, 14.0);
     let half = (width / (2.0 * big)).clamp(0.01, 0.5).asin();
-    let gold = Color32::from_rgb(214, 170, 62);
+    let t = crate::theme::Tokens::get();
+    let gold = t.warning;
     for k in 0..n {
         let centre = angle + std::f64::consts::TAU * k as f64 / n as f64;
         let outward = v.axes(centre.cos(), centre.sin(), 0.0);
@@ -227,8 +229,8 @@ fn inserts(v: &View, tool: &Tool, angle: f64) {
         let pts: Vec<Pos2> =
             corners.iter().filter_map(|(da, z)| v.screen(v.model(big * (centre + da).cos(), big * (centre + da).sin(), *z))).collect();
         if pts.len() == 4 {
-            let fill = Color32::from_rgb(120, 92, 30).lerp_to_gamma(gold, 0.3 + 0.7 * lit);
-            v.painter.add(Shape::convex_polygon(pts, fill, Stroke::new(1.0, Color32::from_rgb(60, 46, 14))));
+            let fill = gold.gamma_multiply(0.55).lerp_to_gamma(gold, 0.3 + 0.7 * lit);
+            v.painter.add(Shape::convex_polygon(pts, fill, Stroke::new(1.0, t.body_edge)));
         }
     }
 }
