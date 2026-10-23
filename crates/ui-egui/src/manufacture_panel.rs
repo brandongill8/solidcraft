@@ -275,11 +275,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label("Drawing detail");
-                for (i, (name, _)) in DETAILS.iter().enumerate() {
-                    if ui.selectable_label(d.detail == i, *name).clicked() {
-                        d.detail = i;
-                    }
-                }
+                let names: Vec<&str> = DETAILS.iter().map(|(name, _)| *name).collect();
+                crate::ui_kit::segmented(ui, &mut d.detail, &names, crate::ui_kit::Segments::default());
             })
             .response
             .on_hover_text("How finely the stock is drawn. Smoother looks better; Draft steps through the program faster.");

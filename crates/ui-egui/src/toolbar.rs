@@ -947,13 +947,20 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             "ws_design"
         };
         icons::paint_icon(&painter, Rect::from_center_size(pos2(ws.center().x, ws.top() + 39.0), vec2(30.0, 30.0)), workspace_icon, 1.0);
-        ribbon_text(ui, pos2(ws.center().x, ws.top() + 69.0), app.tr(if render {
+        ribbon_text(
+            ui,
+            pos2(ws.center().x, ws.top() + 69.0),
+            app.tr(if render {
                 "ui.render"
             } else if machining {
                 "ui.manufacture"
             } else {
                 "ui.design"
-            }), t.font_button, t.text, true);
+            }),
+            t.font_button,
+            t.text,
+            true,
+        );
         let label = app.tr("ui.ribbon_workspace");
         let label_width =
             painter.layout_no_wrap(label.to_string(), FontId::proportional(crate::theme::Tokens::get().font_small), t.text_dim).size().x;

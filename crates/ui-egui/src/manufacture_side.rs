@@ -3,7 +3,7 @@
 //! the right with the tools that were made, the setups and the operations. Both read the job
 //! through `manufacture.job` and act through the same windows and commands as the toolbar.
 
-use egui::{Rect, RichText, Sense, UiBuilder, pos2};
+use egui::{Rect, RichText, UiBuilder, pos2};
 use serde_json::{Value, json};
 
 use crate::SolveApp;
@@ -82,7 +82,8 @@ fn history_contents(app: &mut SolveApp, ui: &mut egui::Ui) {
     let job = job(app);
     let focus = manufacture_job::focused_operation(app);
     let mut pick: Option<(Item, u32)> = None;
-    let label = ui.painter().layout_no_wrap(crate::i18n::tr_label("Manufacture history").to_string(), egui::FontId::proportional(t.font_label), t.text);
+    let label =
+        ui.painter().layout_no_wrap(crate::i18n::tr_label("Manufacture history").to_string(), egui::FontId::proportional(t.font_label), t.text);
     let x = r.left() + t.space_10;
     ui.painter().galley(pos2(x, r.center().y - label.size().y / 2.0), label.clone(), t.text);
     let strip = Rect::from_min_max(pos2(x + label.size().x + t.space_12, r.top()), r.right_bottom());
@@ -93,7 +94,7 @@ fn history_contents(app: &mut SolveApp, ui: &mut egui::Ui) {
                 for setup in job["setups"].as_array().into_iter().flatten() {
                     let id = num(setup, "id");
                     let name = text(setup, "name");
-                    let resp = ui.selectable_label(false, format!("Setup {id}"));
+                    let resp = crate::ui_kit::button(ui, format!("Setup {id}"), crate::ui_kit::Button::Small);
                     crate::scenario::publish_handle(&format!("mfg_history:setup:{id}"), resp.rect.center());
                     if resp.on_hover_text(name).clicked() {
                         pick = Some((Item::Setup, id));
@@ -105,8 +106,9 @@ fn history_contents(app: &mut SolveApp, ui: &mut egui::Ui) {
                 for (i, op) in job["operations"].as_array().into_iter().flatten().enumerate() {
                     let id = num(op, "id");
                     let name = text(op, "name");
-                    let label = format!("{}  {}", i + 1, crate::i18n::tr_label(op_kind(op)));
-                    let resp = ui.selectable_label(focus == Some(id), label);
+                    let mark = if focus == Some(id) { "\u{25B6} " } else { "" };
+                    let label = format!("{mark}{}  {}", i + 1, crate::i18n::tr_label(op_kind(op)));
+                    let resp = crate::ui_kit::button(ui, label, crate::ui_kit::Button::Small);
                     crate::scenario::publish_handle(&format!("mfg_history:operation:{id}"), resp.rect.center());
                     let tip = format!("{name}\nT{}, setup {}", num(op, "tool"), num(op, "setup"));
                     if resp.on_hover_text(tip).clicked() {
@@ -144,7 +146,7 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
                     let id = num(tool, "id");
                     let diameter = tool.get("diameter").and_then(Value::as_f64).unwrap_or(0.0);
                     let label = format!("T{id}  {}  \u{2300}{diameter} mm", text(tool, "name"));
-                    row(ui, &label, &crate::i18n::tr_label(tool_kind(tool)).to_string(), false, (Item::Tool, id), pick, remove);
+                    row(ui, &label, crate::i18n::tr_label(tool_kind(tool)), false, (Item::Tool, id), pick, remove);
                 }
                 if job["tools"].as_array().is_none_or(Vec::is_empty) {
                     ui.label(RichText::new("No tools yet").color(t.text_dim));
@@ -212,21 +214,32 @@ fn section(
     ui.add_space(t.space_6);
 }
 
-fn row(ui: &mut egui::Ui, label: &str, hint: &str, selected: bool, what: (Item, u32), pick: &mut Option<(Item, u32)>, remove: &mut Option<(Item, u32)>) {
+fn row(
+    ui: &mut egui::Ui,
+    label: &str,
+    hint: &str,
+    selected: bool,
+    what: (Item, u32),
+    pick: &mut Option<(Item, u32)>,
+    remove: &mut Option<(Item, u32)>,
+) {
     let t = Tokens::get();
+    let del_width = t.control_height + t.space_6;
     ui.horizontal(|ui| {
-        let resp = ui.selectable_label(selected, label);
+        let width = (ui.available_width() - del_width - ui.spacing().item_spacing.x).max(40.0);
+        let resp = ui
+            .allocate_ui(egui::vec2(width, t.control_height), |ui| {
+                crate::ui_kit::list_picker(ui, &format!("manufacture:{:?}:{}", what.0, what.1), label, selected)
+            })
+            .inner;
         crate::scenario::publish_handle(&format!("manufacture:{:?}:{}", what.0, what.1), resp.rect.center());
         let clicked = if hint.is_empty() { resp.clicked() } else { resp.on_hover_text(hint).clicked() };
         if clicked {
             *pick = Some(what);
         }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let del = ui.add(egui::Label::new(RichText::new("\u{00D7}").color(t.text_dim)).sense(Sense::click()));
-            if del.on_hover_text("Delete").clicked() {
-                *remove = Some(what);
-            }
-        });
+        if crate::ui_kit::button(ui, "\u{00D7}", crate::ui_kit::Button::Small).on_hover_text("Delete").clicked() {
+            *remove = Some(what);
+        }
     });
 }
 
