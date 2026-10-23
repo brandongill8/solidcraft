@@ -2013,5 +2013,14 @@
   "update.up_to_date": "SolidCraft は最新です。",
   "update.update_now": "今すぐ更新",
   "update.you_have": "現在のバージョンは {version} です。",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 選択 · Enter / Tab 補完 · Esc 閉じる"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 選択 · Enter / Tab 補完 · Esc 閉じる",
+  "Manufacture history": "製造履歴",
+  "Nothing yet: make a setup, a tool and an operation": "まだありません。セットアップ、工具、工程を作成します",
+  "Check resolution (mm)": "チェック分解能 (mm)",
+  "Draft": "ドラフト",
+  "Drawing detail": "描画の細かさ",
+  "Fine": "細かい",
+  "No collisions": "干渉なし",
+  "Normal": "標準",
+  "Smooth": "なめらか"
 }

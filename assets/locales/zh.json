@@ -2013,5 +2013,14 @@
   "update.up_to_date": "SolidCraft 已是最新版本。",
   "update.update_now": "立即更新",
   "update.you_have": "当前版本为 {version}。",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 选择 · Enter / Tab 补全 · Esc 关闭"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ 选择 · Enter / Tab 补全 · Esc 关闭",
+  "Manufacture history": "加工历史",
+  "Nothing yet: make a setup, a tool and an operation": "暂无内容:请先创建工序设置、刀具和工序",
+  "Check resolution (mm)": "检查分辨率(mm)",
+  "Draft": "草稿",
+  "Drawing detail": "绘制细节",
+  "Fine": "精细",
+  "No collisions": "无碰撞",
+  "Normal": "标准",
+  "Smooth": "平滑"
 }

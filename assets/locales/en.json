@@ -2013,5 +2013,14 @@
   "update.up_to_date": "SolidCraft is up to date.",
   "update.update_now": "Update now",
   "update.you_have": "You have {version}.",
-  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ choose · Enter / Tab complete · Esc dismiss"
+  "↑ ↓ choose · Enter / Tab complete · Esc dismiss": "↑ ↓ choose · Enter / Tab complete · Esc dismiss",
+  "Manufacture history": "Manufacture history",
+  "Nothing yet: make a setup, a tool and an operation": "Nothing yet: make a setup, a tool and an operation",
+  "Check resolution (mm)": "Check resolution (mm)",
+  "Draft": "Draft",
+  "Drawing detail": "Drawing detail",
+  "Fine": "Fine",
+  "No collisions": "No collisions",
+  "Normal": "Normal",
+  "Smooth": "Smooth"
 }
