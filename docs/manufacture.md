@@ -1,8 +1,8 @@
 # Manufacturing (2.5D CAM core)
 
 An opt-in core for planning 2.5D (three-axis) milling from a design's sketches and posting
-G-code. There is no ribbon tab or panel yet: everything is a command, so scripts, the CLI and
-the control channel can drive it, and a UI can follow.
+G-code. Everything is a command, so scripts, the CLI and the control channel drive it exactly as
+the Manufacture ribbon and its windows do.
 
 The job lives in the design (`manufacture`), so it saves, reopens and undoes with it. A design
 without CAM saves exactly as before. The planning is the `solidcraft-manufacture` crate (L1,
@@ -12,8 +12,28 @@ Units are millimetres, Z is the tool axis (up is positive), feeds are mm/min.
 
 ## Job
 
-- **Tool** (`manufacture.tool.set`): number, kind (`flat_end_mill`, `ball_end_mill`,
-  `bull_nose_end_mill`, `drill`), diameter, flutes, corner radius, tip angle.
+- **Tool** (`manufacture.tool.set`): number, kind, diameter, flutes, corner radius, point angle,
+  and optionally `flute_length` and `shank_diameter`. The kinds:
+
+  | Kind | Works | Notes |
+  |---|---|---|
+  | `flat_end_mill` | sideways and down | |
+  | `ball_end_mill` | sideways and down | planned as if its whole diameter cut at every depth |
+  | `bull_nose_end_mill` | sideways and down | `corner_radius` |
+  | `drill` | along its axis | drill operations; point angle 118 |
+  | `spot_drill` | along its axis | drill operations; point angle 90 |
+  | `reamer` | along its axis | drill operations; flat end |
+  | `shell_mill` | sideways and down | large diameter, flat end |
+  | `face_mill` | sideways and down | very large diameter, flat end; for facing |
+
+  A new tool of a kind starts with that kind's usual flutes and point angle. Drills, spot drills
+  and reamers cannot mill, and the others cannot drill.
+- **Saved tools** (`manufacture.library.list`, `.save`, `.load`, `.delete`): a library file in
+  the SolidCraft data folder (`tool-library.json`, or any file with `path`), kept across
+  designs. `save` copies a design's tool into it by name (the same name replaces), `load` adds a
+  saved tool to the design (the next free tool number unless one is asked for; one undo step),
+  `delete` removes it from the file. A file that does not read is refused and never
+  overwritten.
 - **Setup** (`manufacture.setup.set`): a work frame (`plane` XY/XZ/YZ and `origin`, or a full
   `frame`), work offset G54-G59, optional stock box in work coordinates, clearance height. Sketch
   planes must be parallel to the setup's XY; tilted ones are refused.
@@ -23,11 +43,34 @@ Units are millimetres, Z is the tool axis (up is positive), feeds are mm/min.
 | Kind | Cuts |
 |---|---|
 | `face` | zig-zag over the stock top, with margin and stepover |
-| `contour` | around the chosen sketch profiles: `outside`, `inside` or `on`, climb or conventional, with allowance and ramping |
-| `pocket` | concentric passes inside the profiles, islands respected, optional wall finish pass |
+| `contour` | around the chosen sketch profiles: `outside`, `inside` or `on`, climb or conventional, with allowance and an entry |
+| `pocket` | concentric passes inside the profiles, islands respected, optional wall finish pass, with an entry |
 | `drill` | at circle centres of a sketch, or at given points; optional peck and dwell |
 
 `sketch` can be an id or a name. Deleting a tool or setup that an operation uses is refused.
+
+### Entry into the material
+
+A contour or pocket goes down to each depth (`top` to `bottom` in passes of `stepdown`) with its
+`entry`:
+
+| `entry` | Moves | Numbers |
+|---|---|---|
+| `plunge` | straight down at the plunge feed | |
+| `ramp` | slanting down along the outline, then a full lap at depth | `ramp_angle` (1 to 45 degrees) |
+| `helical` | a circle beside the outline, spiralling down, then a flat lap | `helix_angle` (degrees) and `helix_diameter` (mm of the circle the tool centre follows; 0 is 90% of the tool diameter) |
+
+A helix starts where the circle fits: the planner looks along the outline, nearest to the tool
+first (a corner never has room), and tries smaller circles before giving up. A circle that
+fits nowhere ramps instead and the plan says so in its warnings. Around a part (`outside`) the
+circle is in the air beside it, inside a pocket or an `inside` contour it is in the free space;
+a contour on the line itself has no room and ramps. Every point of the circle keeps the tool
+radius (plus the allowance) from the walls. The descent is a whole number of turns, so the slope
+is never steeper than `helix_angle`.
+
+The feed of a ramped or helical entry is `plunge_feed` when one is set and the cutting `feed`
+otherwise; a plunge runs at `plunge_feed`, or half the feed. Without `entry` (older designs) a
+`ramp_angle` above 0 ramps and 0 plunges, as before.
 
 ## Output
 
@@ -63,6 +106,22 @@ the setup's original stock; operations in other setups do not affect it.
 
 Tools take optional `flute_length` and `shank_diameter`; without a flute length, nothing above
 the tip is checked as a shank.
+
+## The windows
+
+The Manufacture ribbon opens one window per tab, so any of them can stay open beside the model:
+**Tools** (the design's tools, the editor for the eight kinds, and the saved tools to add from),
+**Setup**, **Operations** and **G-code**. Each is a plain front end of the commands above.
+
+- While **Setup** is open the stock is drawn in the model view as a translucent box from the
+  stock min to max, measured from the zero point, with the work axes at the zero point and the
+  size beside it. It follows the numbers as they are typed, before anything is saved.
+- While **Operations** is open (and "Show toolpaths on the part" is ticked) every operation's
+  toolpath is drawn on the part without running a simulation: cutting moves in the accent
+  colour, moves down into the material (plunge, ramp, helix) in the warning colour, rapids
+  grey. The operation being made or edited is drawn in full colour, the others dimmed; a new
+  operation appears as soon as it is added. An operation that cannot be planned says why in the
+  list.
 
 In the app, `ui.start` of `manufacture.simulate` opens the Machining Simulation window: the
 stock is drawn over the viewport with its camera, with the path so far, a slider and Play to

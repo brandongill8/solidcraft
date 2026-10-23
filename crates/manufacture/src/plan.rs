@@ -5,10 +5,12 @@
 //! climb milling keeps the material on the left of the travel. Rapids between features go up to
 //! the setup's clearance height first, so no rapid crosses the part.
 
+use std::cell::Cell;
+
 use solidcraft_geom::{Loop2, MAX_BEZIER_CTRL, Plane, Region2, Seg2, Vec2, Vec3};
 
 use crate::error::{ManufactureError, Result, invalid};
-use crate::job::{Direction, DrillPoints, OpKind, Operation, Setup, Side};
+use crate::job::{Direction, DrillPoints, Entry, EntryMode, OpKind, Operation, Setup, Side};
 use crate::offset::{Clearance, Curve, inset};
 use crate::path::{DrillCycle, Move, Toolpath};
 use crate::ring::{all_finite, dedupe, dist_to_segment, perimeter, signed_area};
@@ -124,22 +126,34 @@ pub fn plan(setup: &Setup, tool: &Tool, op: &Operation, geometry: &Geometry, tol
     }
     let mut pen = Pen::new(setup.clearance);
     let mut warnings = Vec::new();
+    let fallbacks = Cell::new(0usize);
     if matches!(tool.kind, crate::tool::ToolKind::BallEndMill | crate::tool::ToolKind::BullNoseEndMill) && !matches!(op.kind, OpKind::Drill { .. }) {
         warnings.push(format!("a {} is planned as if its whole diameter cut at every depth; walls will not be square", tool.kind.label()));
     }
     match &op.kind {
         OpKind::Face { margin, stepover } => face(&mut pen, setup, tool, op, *margin, *stepover)?,
-        OpKind::Contour { side, direction, allowance, ramp_angle, .. } => {
-            contour(&mut pen, tool, op, geometry, tolerance, *side, *direction, *allowance, *ramp_angle, &mut warnings)?
+        OpKind::Contour { side, direction, allowance, .. } => {
+            let entry = op.kind.entry().unwrap_or(PLUNGE);
+            contour(&mut pen, tool, op, geometry, tolerance, *side, *direction, *allowance, entry, &fallbacks, &mut warnings)?
         }
-        OpKind::Pocket { direction, stepover, allowance, finish, ramp_angle, .. } => {
-            pocket(&mut pen, tool, op, geometry, tolerance, *direction, *stepover, *allowance, *finish, *ramp_angle, &mut warnings)?
+        OpKind::Pocket { direction, stepover, allowance, finish, .. } => {
+            let entry = op.kind.entry().unwrap_or(PLUNGE);
+            pocket(&mut pen, tool, op, geometry, tolerance, *direction, *stepover, *allowance, *finish, entry, &fallbacks, &mut warnings)?
         }
         OpKind::Drill { points, peck, dwell } => drill(&mut pen, tool, op, geometry, points, *peck, *dwell, &mut warnings)?,
     }
     pen.check()?;
+    if fallbacks.get() > 0 {
+        warnings.push(format!(
+            "a helical entry did not fit in {} place(s) (the outline is too narrow for the helix); a ramp was used there instead",
+            fallbacks.get()
+        ));
+    }
     Ok(Plan { toolpath: Toolpath { moves: pen.moves }, warnings })
 }
+
+/// Entry used where an operation has none (facing, drilling): never read.
+const PLUNGE: Entry = Entry { mode: EntryMode::Plunge, ramp_angle: 0.0, helix_angle: 3.0, helix_diameter: 0.0 };
 
 /// The depth of each pass, from the first below `top` down to `bottom` (equal steps no deeper
 /// than `stepdown`).
@@ -274,18 +288,163 @@ fn lap(pen: &mut Pen, ring: &[Vec2], z: f64, feed: f64) {
     }
 }
 
+/// How the tool goes down into the material, and what it needs to do so.
+struct Dive<'a> {
+    entry: Entry,
+    /// Cutting feed (mm/min).
+    feed: f64,
+    /// Feed of a straight plunge.
+    plunge: f64,
+    /// Feed of a ramped or helical entry.
+    entry_feed: f64,
+    /// Where the tool centre may stand, which a helix has to stay inside; none when the tool
+    /// centre follows the outline itself.
+    clear: Option<&'a Clearance>,
+    tool_radius: f64,
+    tol: f64,
+    /// How many helical entries did not fit and ramped instead.
+    fallbacks: &'a Cell<usize>,
+}
+
+impl<'a> Dive<'a> {
+    fn new(op: &Operation, tool: &Tool, entry: Entry, tol: f64, fallbacks: &'a Cell<usize>) -> Dive<'a> {
+        Dive {
+            entry,
+            feed: op.feed,
+            plunge: op.plunge(),
+            entry_feed: op.entry_feed(),
+            clear: None,
+            tool_radius: tool.radius(),
+            tol,
+            fallbacks,
+        }
+    }
+    fn with_clearance(&self, clear: &'a Clearance) -> Dive<'a> {
+        Dive { clear: Some(clear), ..*self }
+    }
+    /// The slope of a ramped entry (degrees); 0 plunges.
+    fn ramp_angle(&self) -> f64 {
+        match self.entry.mode {
+            EntryMode::Plunge => 0.0,
+            EntryMode::Ramp => self.entry.ramp_angle,
+            // A helix that does not fit ramps along the outline at the helix's own slope.
+            EntryMode::Helical => self.entry.helix_angle,
+        }
+    }
+}
+
+/// A circle the tool centre spirals down along.
+struct Helix {
+    centre: Vec2,
+    radius: f64,
+    /// +1 counter-clockwise, -1 clockwise.
+    dir: f64,
+}
+
+/// Most turns one helical entry may take.
+const MAX_HELIX_TURNS: f64 = 400.0;
+
+/// The helix that starts at the ring's first point, tangent to the ring, on the side with room
+/// for it; none when the outline is too narrow (or the tool centre follows the line itself).
+fn helix_for(ring: &[Vec2], drop: f64, dive: &Dive) -> Option<Helix> {
+    let s = *ring.first()?;
+    let t = (*ring.get(1)? - s).normalized()?;
+    helix_at(s, t, drop, dive)
+}
+
+/// The helix that starts at `s` going along `t`, tangent to the path, on the side with room for it.
+fn helix_at(s: Vec2, t: Vec2, drop: f64, dive: &Dive) -> Option<Helix> {
+    let clear = dive.clear?;
+    let left = t.perp();
+    let wanted = if dive.entry.helix_diameter > 0.0 { dive.entry.helix_diameter * 0.5 } else { dive.tool_radius * 0.9 };
+    let slope = dive.entry.helix_angle.to_radians().tan();
+    for shrink in [1.0, 0.8, 0.6, 0.45, 0.3] {
+        let radius = wanted * shrink;
+        if !(radius > 1e-3 && slope > 0.0) || drop / (std::f64::consts::TAU * radius * slope) > MAX_HELIX_TURNS {
+            continue;
+        }
+        for side in [1.0, -1.0] {
+            let centre = s + left * (side * radius);
+            let fits = (0..36).all(|k| clear.ok(centre + Vec2::from_angle(std::f64::consts::TAU * f64::from(k) / 36.0) * radius));
+            if !fits {
+                continue;
+            }
+            // Turn the way the ring goes on from the helix's first point.
+            let radial = (s - centre) * (1.0 / radius);
+            let dir = if radial.perp().dot(t) >= 0.0 { 1.0 } else { -1.0 };
+            return Some(Helix { centre, radius, dir });
+        }
+    }
+    None
+}
+
+/// The ring turned to start where a helix fits, nearest `here` first (a corner never has room:
+/// a circle touching one wall there cuts into the next). None when a helical entry is not asked
+/// for, or no helix fits anywhere on the ring.
+fn helical_start(ring: &[Vec2], here: Vec2, drop: f64, dive: &Dive) -> Option<Vec<Vec2>> {
+    if dive.entry.mode != EntryMode::Helical || dive.clear.is_none() || drop <= 1e-9 {
+        return None;
+    }
+    let n = ring.len();
+    // The vertices and the middles of the edges, evenly thinned on a ring of many points.
+    let stride = (n / 24).max(1);
+    let mut candidates: Vec<(f64, Vec2)> = Vec::new();
+    for i in (0..n).step_by(stride) {
+        let (Some(&a), Some(&b)) = (ring.get(i), ring.get((i + 1) % n)) else { continue };
+        let mid = a.lerp(b, 0.5);
+        candidates.push((a.dist(here), a));
+        candidates.push((mid.dist(here), mid));
+    }
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates.into_iter().map(|(_, p)| rotate_at(ring, p)).find(|r| helix_for(r, drop, dive).is_some())
+}
+
+/// Spirals from the ring's first point at `z_from` down to `z`, ending above the same point,
+/// then one flat circle at depth to true the floor of the hole.
+fn helix_down(pen: &mut Pen, start: Vec2, h: &Helix, z_from: f64, z: f64, dive: &Dive) {
+    let drop = z_from - z;
+    let pitch = std::f64::consts::TAU * h.radius * dive.entry.helix_angle.to_radians().tan();
+    let turns = (drop / pitch).ceil().clamp(1.0, MAX_HELIX_TURNS);
+    let chord = (1.0 - dive.tol / h.radius).clamp(-1.0, 1.0).acos();
+    let per_turn = if chord > 1e-6 { (std::f64::consts::TAU / chord).ceil().clamp(16.0, 180.0) } else { 180.0 };
+    let steps = (turns * per_turn) as usize;
+    let a0 = (start - h.centre).angle();
+    for k in 1..=steps {
+        if pen.over {
+            return;
+        }
+        let f = k as f64 / steps as f64;
+        let at = if k == steps { start } else { h.centre + Vec2::from_angle(a0 + h.dir * std::f64::consts::TAU * turns * f) * h.radius };
+        pen.feed(at.extend(z_from - drop * f), dive.entry_feed);
+    }
+    let flat = per_turn as usize;
+    for k in 1..=flat {
+        let at = if k == flat { start } else { h.centre + Vec2::from_angle(a0 + h.dir * std::f64::consts::TAU * k as f64 / flat as f64) * h.radius };
+        pen.feed(at.extend(z), dive.feed);
+    }
+}
+
 /// Cuts one closed ring from `z_from` (where the tool stands above its first point) down to
-/// `z`: a plunge, or a ramp of `ramp_angle` degrees along the ring and then a full lap at depth.
-/// Returns where the lap ended.
-fn cut_ring(pen: &mut Pen, ring: &[Vec2], z_from: f64, z: f64, feed: f64, plunge: f64, ramp_angle: f64) -> Vec2 {
+/// `z`: a plunge, a ramp along the ring and then a full lap at depth, or a helix beside the ring
+/// (a lap after it). Returns where the lap ended.
+fn cut_ring(pen: &mut Pen, ring: &[Vec2], z_from: f64, z: f64, dive: &Dive) -> Vec2 {
     let n = ring.len();
     let Some(&start) = ring.first() else { return Vec2::ZERO };
     let drop = z_from - z;
+    if dive.entry.mode == EntryMode::Helical && drop > 1e-9 {
+        if let Some(h) = helix_for(ring, drop, dive) {
+            helix_down(pen, start, &h, z_from, z, dive);
+            lap(pen, ring, z, dive.feed);
+            return start;
+        }
+        dive.fallbacks.set(dive.fallbacks.get() + 1);
+    }
     let perim = perimeter(ring);
+    let ramp_angle = dive.ramp_angle();
     let ramp_len = if ramp_angle > 0.0 && drop > 1e-9 { (drop / ramp_angle.to_radians().tan()).min(perim * 20.0) } else { 0.0 };
     if ramp_len <= 1e-9 || n < 3 {
-        pen.feed(start.extend(z), plunge);
-        lap(pen, ring, z, feed);
+        pen.feed(start.extend(z), dive.plunge);
+        lap(pen, ring, z, dive.feed);
         return start;
     }
     let mut acc = 0.0;
@@ -299,10 +458,10 @@ fn cut_ring(pen: &mut Pen, ring: &[Vec2], z_from: f64, z: f64, feed: f64, plunge
             }
             if acc + len < ramp_len - 1e-12 {
                 acc += len;
-                pen.feed(b.extend(z_from - drop * acc / ramp_len), feed);
+                pen.feed(b.extend(z_from - drop * acc / ramp_len), dive.entry_feed);
             } else {
                 let p = a + (b - a) * ((ramp_len - acc) / len);
-                pen.feed(p.extend(z), feed);
+                pen.feed(p.extend(z), dive.entry_feed);
                 ended = Some((i, p));
                 break 'laps;
             }
@@ -311,15 +470,15 @@ fn cut_ring(pen: &mut Pen, ring: &[Vec2], z_from: f64, z: f64, feed: f64, plunge
     let (i, p) = ended.unwrap_or((0, start));
     if let Some(&b) = ring.get((i + 1) % n) {
         if b.dist(p) > 1e-9 {
-            pen.feed(b.extend(z), feed);
+            pen.feed(b.extend(z), dive.feed);
         }
         for j in 2..=n {
             if let Some(v) = ring.get((i + j) % n) {
-                pen.feed(v.extend(z), feed);
+                pen.feed(v.extend(z), dive.feed);
             }
         }
     }
-    pen.feed(p.extend(z), feed);
+    pen.feed(p.extend(z), dive.feed);
     p
 }
 
@@ -371,16 +530,22 @@ fn contour(
     side: Side,
     direction: Direction,
     allowance: f64,
-    ramp_angle: f64,
+    entry: Entry,
+    fallbacks: &Cell<usize>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     if geometry.regions.is_empty() {
         return invalid("the contour has no closed outline to follow");
     }
     let d = tool.radius() + allowance;
-    let mut curves: Vec<Curve> = Vec::new();
+    let dive = Dive::new(op, tool, entry, tol, fallbacks);
+    // Where the tool centre may stand, for each region whose outline is offset (a helix has to
+    // stay inside it).
+    let mut clears: Vec<Clearance> = Vec::new();
+    let mut curves: Vec<(Curve, Option<usize>)> = Vec::new();
     for region in &geometry.regions {
         let (outer, holes) = region_rings(region, tol)?;
+        let mut clear_at: Option<usize> = None;
         let found = match side {
             Side::On => {
                 let mut v = vec![Curve { points: outer, closed: true }];
@@ -407,6 +572,10 @@ fn contour(
                     std::iter::once(outer).chain(holes).collect()
                 };
                 let mut v = inset(&rings, d, tol)?;
+                // Around the part the free space is outside the rings; inside, within them.
+                let room = Clearance::new(&rings, d);
+                clears.push(if side == Side::Outside { room.complement() } else { room });
+                clear_at = Some(clears.len() - 1);
                 // The offset keeps free space on the left; climb wants the material there.
                 if direction == Direction::Climb {
                     for c in &mut v {
@@ -419,30 +588,37 @@ fn contour(
         if found.is_empty() {
             warnings.push(format!("the {} mm tool does not fit an outline of the contour (it is narrower than the tool)", tool.diameter));
         }
-        curves.extend(found);
+        curves.extend(found.into_iter().map(|c| (c, clear_at)));
     }
     if curves.is_empty() {
         return invalid("no contour toolpath: the tool does not fit the outline");
     }
     // Inner outlines first, so the part stays attached to the stock for as long as possible.
-    curves.sort_by(|a, b| perimeter(&a.points).total_cmp(&perimeter(&b.points)));
+    curves.sort_by(|a, b| perimeter(&a.0.points).total_cmp(&perimeter(&b.0.points)));
     let safe = op.top + op.retract;
     let feed_plane = op.top + op.retract.min(1.0);
     let lv = levels(op.top, op.bottom, op.stepdown)?;
-    for curve in curves {
+    for (curve, clear_at) in curves {
         if curve.points.len() < 2 {
             continue;
         }
+        let dive = match clear_at.and_then(|i| clears.get(i)) {
+            Some(c) => dive.with_clearance(c),
+            None => Dive::new(op, tool, entry, tol, fallbacks),
+        };
         let from = pen.xy().unwrap_or(Vec2::ZERO);
         if curve.closed {
             let mut ring = curve.points;
             ring = rotate_at(&ring, from);
+            if let Some(&first_depth) = lv.first() {
+                ring = helical_start(&ring, from, feed_plane - first_depth, &dive).unwrap_or(ring);
+            }
             let Some(&start) = ring.first() else { continue };
             pen.travel(start, safe);
             pen.rapid(start.extend(feed_plane));
             let mut z_prev = feed_plane;
             for z in &lv {
-                let end = cut_ring(pen, &ring, z_prev, *z, op.feed, op.plunge(), ramp_angle);
+                let end = cut_ring(pen, &ring, z_prev, *z, &dive);
                 ring = rotate_at(&ring, end);
                 z_prev = *z;
             }
@@ -474,7 +650,8 @@ fn pocket(
     stepover: f64,
     allowance: f64,
     finish: bool,
-    ramp_angle: f64,
+    entry: Entry,
+    fallbacks: &Cell<usize>,
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     if geometry.regions.is_empty() {
@@ -516,6 +693,7 @@ fn pocket(
             }
         }
         let clear = Clearance::new(&rings, d0);
+        let dive = Dive::new(op, tool, entry, tol, fallbacks).with_clearance(&clear);
         let link_ok = |a: Vec2, b: Vec2| -> bool {
             let len = a.dist(b);
             if len > step * 2.5 + 1e-9 {
@@ -547,9 +725,11 @@ fn pocket(
                         lap(pen, &ring, *z, op.feed);
                         start
                     } else {
+                        let ring = helical_start(&ring, here, z_prev - *z, &dive).unwrap_or(ring);
+                        let start = ring.first().copied().unwrap_or(start);
                         pen.travel(start, safe);
                         pen.rapid(start.extend(z_prev));
-                        cut_ring(pen, &ring, z_prev, *z, op.feed, op.plunge(), ramp_angle)
+                        cut_ring(pen, &ring, z_prev, *z, &dive)
                     };
                     last_end = Some(end);
                     pen.check()?;
@@ -563,13 +743,17 @@ fn pocket(
                     c.points.reverse();
                 }
             }
+            // The finish ring is a tool radius from the wall, closer than the passes before it.
+            let wall_clear = Clearance::new(&rings, r);
+            let wall_dive = Dive::new(op, tool, entry, tol, fallbacks).with_clearance(&wall_clear);
             for c in walls.into_iter().filter(|c| c.closed && c.points.len() >= 3) {
                 let from = pen.xy().unwrap_or(Vec2::ZERO);
                 let ring = rotate_at(&c.points, from);
+                let ring = helical_start(&ring, from, feed_plane - op.bottom, &wall_dive).unwrap_or(ring);
                 let Some(&start) = ring.first() else { continue };
                 pen.travel(start, safe);
                 pen.rapid(start.extend(feed_plane));
-                cut_ring(pen, &ring, feed_plane, op.bottom, op.feed, op.plunge(), ramp_angle);
+                cut_ring(pen, &ring, feed_plane, op.bottom, &wall_dive);
                 pen.check()?;
             }
         }

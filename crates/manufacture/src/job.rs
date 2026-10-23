@@ -236,6 +236,43 @@ fn default_stepover_face() -> f64 {
 fn default_ramp() -> f64 {
     3.0
 }
+fn default_helix_angle() -> f64 {
+    3.0
+}
+
+/// How the cutter first goes down into the material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryMode {
+    /// Straight down at the plunge feed.
+    Plunge,
+    /// Slanting down along the outline at the ramp angle.
+    Ramp,
+    /// Spiralling down in a circle beside the outline at the helix angle.
+    Helical,
+}
+
+impl EntryMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            EntryMode::Plunge => "plunge",
+            EntryMode::Ramp => "ramp",
+            EntryMode::Helical => "helical",
+        }
+    }
+}
+
+/// The way a contour or pocket enters each depth, with its numbers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Entry {
+    pub mode: EntryMode,
+    /// Ramp angle (degrees).
+    pub ramp_angle: f64,
+    /// Helix angle (degrees).
+    pub helix_angle: f64,
+    /// Diameter of the circle the tool centre follows going down (mm); 0 is automatic.
+    pub helix_diameter: f64,
+}
 
 /// What an operation does.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -263,6 +300,15 @@ pub enum OpKind {
         /// Ramp angle into each depth (degrees); 0 plunges.
         #[serde(default = "default_ramp")]
         ramp_angle: f64,
+        /// How each depth is entered; none (older designs) ramps when `ramp_angle` is above 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<EntryMode>,
+        /// Angle of a helical entry (degrees).
+        #[serde(default = "default_helix_angle")]
+        helix_angle: f64,
+        /// Diameter of a helical entry's circle (mm); 0 takes 90% of the tool diameter.
+        #[serde(default)]
+        helix_diameter: f64,
     },
     /// Clear the inside of an outline in concentric passes, around islands.
     Pocket {
@@ -278,6 +324,12 @@ pub enum OpKind {
         finish: bool,
         #[serde(default = "default_ramp")]
         ramp_angle: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        entry: Option<EntryMode>,
+        #[serde(default = "default_helix_angle")]
+        helix_angle: f64,
+        #[serde(default)]
+        helix_diameter: f64,
     },
     /// Drill holes.
     Drill {
@@ -298,6 +350,17 @@ impl OpKind {
             OpKind::Contour { .. } => "contour",
             OpKind::Pocket { .. } => "pocket",
             OpKind::Drill { .. } => "drill",
+        }
+    }
+
+    /// How a contour or pocket enters each depth (none for facing and drilling).
+    pub fn entry(&self) -> Option<Entry> {
+        match self {
+            OpKind::Contour { ramp_angle, entry, helix_angle, helix_diameter, .. } | OpKind::Pocket { ramp_angle, entry, helix_angle, helix_diameter, .. } => {
+                let mode = entry.unwrap_or(if *ramp_angle > 0.0 { EntryMode::Ramp } else { EntryMode::Plunge });
+                Some(Entry { mode, ramp_angle: *ramp_angle, helix_angle: *helix_angle, helix_diameter: *helix_diameter })
+            }
+            _ => None,
         }
     }
 }
@@ -341,6 +404,12 @@ pub struct Operation {
 impl Operation {
     pub fn plunge(&self) -> f64 {
         if self.plunge_feed > 0.0 { self.plunge_feed } else { self.feed * 0.5 }
+    }
+
+    /// The feed of a ramped or helical entry: the plunge feed when one is set, otherwise the
+    /// cutting feed (the tool is cutting sideways as well as down).
+    pub fn entry_feed(&self) -> f64 {
+        if self.plunge_feed > 0.0 { self.plunge_feed } else { self.feed }
     }
 
     /// The operation is usable with this tool and setup.
@@ -411,6 +480,21 @@ impl Operation {
             }
             Ok(())
         };
+        let entry = |e: Entry| -> Result<()> {
+            ramp(e.ramp_angle)?;
+            finite(e.helix_angle, "the helix angle")?;
+            if !(e.helix_angle > 0.0 && e.helix_angle <= 45.0) {
+                return invalid("the helix angle is above 0 and at most 45 degrees");
+            }
+            finite(e.helix_diameter, "the helix diameter")?;
+            if !(0.0..=1000.0).contains(&e.helix_diameter) {
+                return invalid("the helix diameter is between 0 (automatic) and 1000 mm");
+            }
+            if e.mode == EntryMode::Ramp && e.ramp_angle <= 0.0 {
+                return invalid("a ramped entry needs a ramp angle above 0");
+            }
+            Ok(())
+        };
         match &self.kind {
             OpKind::Face { margin, stepover } => {
                 ratio(*stepover, "the stepover")?;
@@ -422,14 +506,18 @@ impl Operation {
                     return invalid("facing needs the setup's stock: give the setup a stock box");
                 }
             }
-            OpKind::Contour { allowance: a, ramp_angle, .. } => {
+            OpKind::Contour { allowance: a, .. } => {
                 allowance(*a)?;
-                ramp(*ramp_angle)?;
+                if let Some(e) = self.kind.entry() {
+                    entry(e)?;
+                }
             }
-            OpKind::Pocket { stepover, allowance: a, ramp_angle, .. } => {
+            OpKind::Pocket { stepover, allowance: a, .. } => {
                 ratio(*stepover, "the stepover")?;
                 allowance(*a)?;
-                ramp(*ramp_angle)?;
+                if let Some(e) = self.kind.entry() {
+                    entry(e)?;
+                }
             }
             OpKind::Drill { points, peck, dwell } => {
                 if let Some(p) = peck {

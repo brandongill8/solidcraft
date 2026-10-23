@@ -345,6 +345,8 @@ pub(crate) struct Clearance {
     rings: Vec<Vec<Vec2>>,
     index: EdgeIndex,
     d: f64,
+    /// The free space is the outside of the rings (an even count) rather than their inside.
+    outside: bool,
 }
 
 impl Clearance {
@@ -357,12 +359,18 @@ impl Clearance {
                 }
             }
         }
-        Clearance { rings: rings.to_vec(), index: EdgeIndex::new(edges, d.max(1e-6)), d }
+        Clearance { rings: rings.to_vec(), index: EdgeIndex::new(edges, d.max(1e-6)), d, outside: false }
+    }
+
+    /// The same rings with the free space on the other side: around a part rather than inside it.
+    pub(crate) fn complement(mut self) -> Clearance {
+        self.outside = !self.outside;
+        self
     }
 
     pub(crate) fn ok(&self, p: Vec2) -> bool {
         let crossings = self.rings.iter().filter(|r| crate::ring::contains(r, p)).count();
-        crossings % 2 == 1 && !self.index.any_closer(p, self.d - (1e-7 * self.d).max(1e-7))
+        (crossings % 2 == 1) != self.outside && !self.index.any_closer(p, self.d - (1e-7 * self.d).max(1e-7))
     }
 }
 

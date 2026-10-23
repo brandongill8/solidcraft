@@ -17,12 +17,32 @@ pub enum ToolKind {
     BallEndMill,
     BullNoseEndMill,
     Drill,
+    /// A short, stiff drill with a wide point that starts a hole (default point angle 90).
+    SpotDrill,
+    /// Finishes a drilled hole to size; it cuts along its axis only, with a flat end.
+    Reamer,
+    /// A large-diameter mill with a flat end, for wide shallow cuts and shoulders.
+    ShellMill,
+    /// A very large-diameter flat-ended mill with inserts, for skimming surfaces.
+    FaceMill,
 }
 
 impl ToolKind {
-    /// A tool that drills along its axis only.
+    /// Every kind, in the order a tool list offers them.
+    pub const ALL: [ToolKind; 8] = [
+        ToolKind::FlatEndMill,
+        ToolKind::BallEndMill,
+        ToolKind::BullNoseEndMill,
+        ToolKind::Drill,
+        ToolKind::SpotDrill,
+        ToolKind::Reamer,
+        ToolKind::ShellMill,
+        ToolKind::FaceMill,
+    ];
+
+    /// A tool that works along its axis only (drilling operations), never sideways.
     pub fn is_drill(self) -> bool {
-        matches!(self, ToolKind::Drill)
+        matches!(self, ToolKind::Drill | ToolKind::SpotDrill | ToolKind::Reamer)
     }
     pub fn label(self) -> &'static str {
         match self {
@@ -30,7 +50,24 @@ impl ToolKind {
             ToolKind::BallEndMill => "ball end mill",
             ToolKind::BullNoseEndMill => "bull nose end mill",
             ToolKind::Drill => "drill",
+            ToolKind::SpotDrill => "spot drill",
+            ToolKind::Reamer => "reamer",
+            ToolKind::ShellMill => "shell mill",
+            ToolKind::FaceMill => "face mill",
         }
+    }
+    /// The number of cutting edges a new tool of this kind starts with.
+    pub fn default_flutes(self) -> u32 {
+        match self {
+            ToolKind::FlatEndMill | ToolKind::BallEndMill | ToolKind::BullNoseEndMill | ToolKind::Drill | ToolKind::SpotDrill => 2,
+            ToolKind::Reamer => 6,
+            ToolKind::ShellMill => 4,
+            ToolKind::FaceMill => 5,
+        }
+    }
+    /// The point angle a new tool of this kind starts with (degrees; used by drills only).
+    pub fn default_tip_angle(self) -> f64 {
+        if self == ToolKind::SpotDrill { 90.0 } else { 118.0 }
     }
 }
 
@@ -123,7 +160,8 @@ impl Tool {
         let big = self.radius();
         let r = r.abs().min(big);
         match self.kind {
-            ToolKind::FlatEndMill => 0.0,
+            // A reamer, shell mill and face mill end flat, like a flat end mill.
+            ToolKind::FlatEndMill | ToolKind::Reamer | ToolKind::ShellMill | ToolKind::FaceMill => 0.0,
             ToolKind::BallEndMill => big - (big * big - r * r).max(0.0).sqrt(),
             ToolKind::BullNoseEndMill => {
                 let rc = self.corner_radius;
@@ -135,7 +173,7 @@ impl Tool {
                     rc - (rc * rc - d * d).max(0.0).sqrt()
                 }
             }
-            ToolKind::Drill => r / (self.tip_angle.to_radians() * 0.5).tan().max(1e-3),
+            ToolKind::Drill | ToolKind::SpotDrill => r / (self.tip_angle.to_radians() * 0.5).tan().max(1e-3),
         }
     }
 }

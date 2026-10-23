@@ -27,7 +27,7 @@ pub static COMMANDS: &[CommandSpec] = &[
 CommandSpec::new("manufacture.job", "Manufacturing Job", job).icon("list").noundo().doc_only()
     .params("No parameters. Returns {tools, setups, operations}: the design's tool library, setups (work frame, stock, work offset, clearance height) and operations. See docs/manufacture.md"),
 CommandSpec::new("manufacture.tool.set", "Set Tool", tool_set).icon("hole").doc_only().at("MANUFACTURE", "TOOLS")
-    .params("id?: tool number (new when omitted or unused; the controller's T number), name?, kind?: flat_end_mill|ball_end_mill|bull_nose_end_mill|drill, diameter (mm), flutes?: 2, corner_radius?: 0, tip_angle?: 118 (drills). Updates only the fields given. One undo step."),
+    .params("id?: tool number (new when omitted or unused; the controller's T number), name?, kind?: flat_end_mill|ball_end_mill|bull_nose_end_mill|drill|spot_drill|reamer|shell_mill|face_mill, diameter (mm), flutes?: 2, corner_radius?: 0 (bull nose), tip_angle?: 118 (drills; 90 is usual for a spot drill), flute_length? and shank_diameter? (mm; the simulation reports the shank touching stock or the part). Updates only the fields given. Drills, spot drills and reamers work along their axis (drill operations); the others mill. One undo step."),
 CommandSpec::new("manufacture.tool.delete", "Delete Tool", tool_delete).icon("delete").doc_only()
     .params("id: tool number. Refused while an operation uses it (they are listed)."),
 CommandSpec::new("manufacture.setup.set", "Set Setup", setup_set).icon("gear").doc_only().at("MANUFACTURE", "SETUPS")
@@ -35,7 +35,7 @@ CommandSpec::new("manufacture.setup.set", "Set Setup", setup_set).icon("gear").d
 CommandSpec::new("manufacture.setup.delete", "Delete Setup", setup_delete).icon("delete").doc_only()
     .params("id: setup number. Refused while an operation is in it."),
 CommandSpec::new("manufacture.operation.set", "Set Operation", operation_set).icon("extrude").doc_only().at("MANUFACTURE", "OPERATIONS")
-    .params("id?: operation number (new when omitted or unused), name?, setup, tool, kind: {type: face, margin?: 0, stepover?: 0.6} | {type: contour, source: {sketch, profiles?: [indices]}, side?: outside|inside|on, direction?: climb|conventional, allowance?: 0, ramp_angle?: 3} | {type: pocket, source, direction?, stepover?: 0.4, allowance?: 0, finish?: false, ramp_angle?: 3} | {type: drill, points: {from: sketch, sketch, profiles?} | {from: points, points: [[x, y]]}, peck?, dwell?: 0}; top (work Z of the surface, mm), bottom (work Z of the deepest cut), retract?: 2 (feed plane above top), stepdown? (default half the tool diameter), spindle_rpm, feed (mm/min), plunge_feed? (half the feed), coolant?: false. `sketch` may be an id or a name. Updates only the fields given. Checked against the tool and setup. See docs/manufacture.md"),
+    .params("id?: operation number (new when omitted or unused), name?, setup, tool, kind: {type: face, margin?: 0, stepover?: 0.6} | {type: contour, source: {sketch, profiles?: [indices]}, side?: outside|inside|on, direction?: climb|conventional, allowance?: 0, entry?: plunge|ramp|helical, ramp_angle?: 3, helix_angle?: 3, helix_diameter?: 0} | {type: pocket, source, direction?, stepover?: 0.4, allowance?: 0, finish?: false, entry?, ramp_angle?: 3, helix_angle?: 3, helix_diameter?: 0} | {type: drill, points: {from: sketch, sketch, profiles?} | {from: points, points: [[x, y]]}, peck?, dwell?: 0}; top (work Z of the surface, mm), bottom (work Z of the deepest cut), retract?: 2 (feed plane above top), stepdown? (default half the tool diameter), spindle_rpm, feed (mm/min), plunge_feed? (a plunge runs at it, half the feed when omitted; a ramped or helical entry runs at it too, at the cutting feed when omitted), coolant?: false. `entry` is how each depth is entered: plunge straight down; ramp along the outline at `ramp_angle` degrees (1-45); helical in a circle of `helix_diameter` mm (0: 90% of the tool diameter) at `helix_angle` degrees (a circle that does not fit ramps instead and the plan warns). Without `entry`, a ramp_angle above 0 ramps and 0 plunges. `sketch` may be an id or a name. Updates only the fields given. Checked against the tool and setup. See docs/manufacture.md"),
 CommandSpec::new("manufacture.operation.delete", "Delete Operation", operation_delete).icon("delete").doc_only()
     .params("id: operation number."),
 CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).icon("measure").noundo().at("MANUFACTURE", "OPERATIONS")
@@ -52,19 +52,19 @@ fn job(s: &mut Session, _p: &Value) -> Result<Value> {
 
 // ------------------------------------------------------------------------------------- helpers
 
-fn object<'a>(p: &'a Value, cmd: &str) -> Result<&'a Map<String, Value>> {
+pub(super) fn object<'a>(p: &'a Value, cmd: &str) -> Result<&'a Map<String, Value>> {
     p.as_object().ok_or_else(|| bad(cmd, "the parameters must be an object"))
 }
 
-fn number_id(v: &Value, what: &str, cmd: &str) -> Result<u32> {
+pub(super) fn number_id(v: &Value, what: &str, cmd: &str) -> Result<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0).ok_or_else(|| bad(cmd, format!("`{what}` must be a whole number of 1 or more")))
 }
 
-fn required_id(p: &Value, key: &str, cmd: &str) -> Result<u32> {
+pub(super) fn required_id(p: &Value, key: &str, cmd: &str) -> Result<u32> {
     number_id(p.get(key).ok_or_else(|| bad(cmd, format!("`{key}` is required")))?, key, cmd)
 }
 
-fn new_id(cmd: &str, ids: impl Iterator<Item = u32>) -> Result<u32> {
+pub(super) fn new_id(cmd: &str, ids: impl Iterator<Item = u32>) -> Result<u32> {
     u32::try_from(next_free_id(cmd, ids.map(u64::from))?).map_err(|_| bad(cmd, "no numbers left to give"))
 }
 
@@ -86,7 +86,7 @@ fn patched<T: Serialize + DeserializeOwned>(base: Option<&T>, id: u32, p: &Map<S
 }
 
 /// Checks the job and stores it, unless it is what the design already has.
-fn store(s: &mut Session, job: mf::Job, cmd: &str) -> Result<()> {
+pub(super) fn store(s: &mut Session, job: mf::Job, cmd: &str) -> Result<()> {
     job.validate().map_err(|e| bad(cmd, e.to_string()))?;
     if *s.doc.manufacture != job {
         s.doc_mut().manufacture = Arc::new(job);
@@ -94,11 +94,11 @@ fn store(s: &mut Session, job: mf::Job, cmd: &str) -> Result<()> {
     Ok(())
 }
 
-fn job_of(s: &Session) -> mf::Job {
+pub(super) fn job_of(s: &Session) -> mf::Job {
     (*s.doc.manufacture).clone()
 }
 
-fn upsert<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T) -> bool) {
+pub(super) fn upsert<T>(list: &mut Vec<T>, item: T, same: impl Fn(&T) -> bool) {
     match list.iter_mut().find(|x| same(x)) {
         Some(slot) => *slot = item,
         None => list.push(item),

@@ -2,7 +2,7 @@ use std::f64::consts::PI;
 
 use solidcraft_geom::{Loop2, Plane, Region2, Vec2, Vec3};
 
-use crate::job::{Direction, DrillPoints, Job, OpKind, Operation, Setup, Side, Source, Stock};
+use crate::job::{Direction, DrillPoints, EntryMode, Job, OpKind, Operation, Setup, Side, Source, Stock};
 use crate::offset::{Curve, inset};
 use crate::path::{DrillCycle, Move, Toolpath};
 use crate::plan::{Geometry, Site, circle_sites, levels, plan, region_to_work};
@@ -85,10 +85,10 @@ fn source() -> Source {
     Source { sketch: 1, profiles: vec![] }
 }
 fn contour_op(side: Side, direction: Direction, allowance: f64) -> Operation {
-    op(OpKind::Contour { source: source(), side, direction, allowance, ramp_angle: 3.0 }, 1)
+    op(OpKind::Contour { source: source(), side, direction, allowance, ramp_angle: 3.0, entry: None, helix_angle: 3.0, helix_diameter: 0.0 }, 1)
 }
 fn pocket_op(stepover: f64, finish: bool, allowance: f64) -> Operation {
-    op(OpKind::Pocket { source: source(), direction: Direction::Climb, stepover, allowance, finish, ramp_angle: 3.0 }, 1)
+    op(OpKind::Pocket { source: source(), direction: Direction::Climb, stepover, allowance, finish, ramp_angle: 3.0, entry: None, helix_angle: 3.0, helix_diameter: 0.0 }, 1)
 }
 fn geometry(regions: Vec<Region2>) -> Geometry {
     Geometry { regions, sites: vec![] }
@@ -782,4 +782,259 @@ fn hostile_simulation_input_is_an_error() {
     );
     let r = simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &long }], &sim_opts(0.05));
     assert!(r.is_err());
+}
+
+// --------------------------------------------------------------------- tool kinds and entry moves
+
+/// `o` (a contour or pocket) with its entry settings replaced.
+fn entering(mut o: Operation, mode: Option<EntryMode>, ramp: f64, helix_angle: f64, helix_diameter: f64) -> Operation {
+    if let OpKind::Contour { entry, ramp_angle, helix_angle: ha, helix_diameter: hd, .. }
+    | OpKind::Pocket { entry, ramp_angle, helix_angle: ha, helix_diameter: hd, .. } = &mut o.kind
+    {
+        *entry = mode;
+        *ramp_angle = ramp;
+        *ha = helix_angle;
+        *hd = helix_diameter;
+    }
+    o
+}
+
+/// The feed moves that go down and sideways at once (a ramp or a helix), with their feeds.
+fn slanted(t: &Toolpath) -> Vec<(Vec3, Vec3, f64)> {
+    let mut at: Option<Vec3> = None;
+    let mut out = Vec::new();
+    for m in &t.moves {
+        match m {
+            Move::Rapid { to } => at = Some(*to),
+            Move::Feed { to, feed } => {
+                if let Some(a) = at
+                    && a.z - to.z > 1e-9
+                    && Vec2::new(a.x, a.y).dist(Vec2::new(to.x, to.y)) > 1e-9
+                {
+                    out.push((a, *to, *feed));
+                }
+                at = Some(*to);
+            }
+            Move::Drill(_) => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn every_tool_kind_round_trips_and_validates() {
+    assert_eq!(ToolKind::ALL.len(), 8);
+    for kind in ToolKind::ALL {
+        let t = Tool { kind, flutes: kind.default_flutes(), tip_angle: kind.default_tip_angle(), ..tool(1, 6.0) };
+        t.validate().unwrap();
+        let back: Tool = serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap();
+        assert_eq!(back, t);
+        assert!(!kind.label().is_empty());
+    }
+    let shell: Tool = serde_json::from_str(r#"{"id": 3, "name": "Shell", "kind": "shell_mill", "diameter": 50.0}"#).unwrap();
+    assert_eq!(shell.kind, ToolKind::ShellMill);
+    assert!(serde_json::from_str::<Tool>(r#"{"id": 3, "name": "x", "kind": "laser", "diameter": 5.0}"#).is_err());
+    assert!(near(ToolKind::SpotDrill.default_tip_angle(), 90.0, 0.0) && near(ToolKind::Drill.default_tip_angle(), 118.0, 0.0));
+}
+
+#[test]
+fn spot_drills_and_reamers_drill_and_the_wide_mills_mill() {
+    let spot = Tool { kind: ToolKind::SpotDrill, tip_angle: 90.0, ..tool(1, 6.0) };
+    let reamer = Tool { kind: ToolKind::Reamer, ..tool(1, 6.0) };
+    let shell = Tool { kind: ToolKind::ShellMill, ..tool(1, 25.0) };
+    let face = Tool { kind: ToolKind::FaceMill, ..tool(1, 40.0) };
+    // A 90 degree point rises one for one; a reamer, shell mill and face mill end flat.
+    assert!(near(spot.lift(3.0), 3.0, 1e-9));
+    for t in [&reamer, &shell, &face] {
+        assert!(near(t.lift(t.radius()), 0.0, 0.0));
+    }
+    let drill_op = op(OpKind::Drill { points: DrillPoints::Points { points: vec![[10.0, 10.0]] }, peck: None, dwell: 0.0 }, 1);
+    for t in [&spot, &reamer] {
+        assert!(t.kind.is_drill());
+        assert!(plan(&setup(), t, &drill_op, &Geometry::default(), 0.005).is_ok(), "{} drills", t.kind.label());
+        let mill = contour_op(Side::Outside, Direction::Climb, 0.0);
+        assert!(plan(&setup(), t, &mill, &geometry(vec![rect_region(0.0, 0.0, 30.0, 30.0)]), 0.005).is_err(), "{} cannot mill", t.kind.label());
+    }
+    let face_op = Operation { bottom: -1.0, stepdown: 1.0, ..op(OpKind::Face { margin: 0.0, stepover: 0.6 }, 1) };
+    for t in [&shell, &face] {
+        assert!(!t.kind.is_drill());
+        assert!(plan(&setup(), t, &face_op, &Geometry::default(), 0.005).is_ok(), "{} faces", t.kind.label());
+    }
+    let pocket = pocket_op(0.4, false, 0.0);
+    assert!(plan(&setup(), &shell, &pocket, &geometry(vec![rect_region(0.0, 0.0, 90.0, 70.0)]), 0.005).is_ok());
+}
+
+#[test]
+fn a_plunge_goes_straight_down_and_ignores_the_angles() {
+    let region = rect_region(0.0, 0.0, 60.0, 40.0);
+    let o = entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Plunge), 3.0, 3.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &geometry(vec![region]), 0.005).unwrap();
+    assert!(slanted(&p.toolpath).is_empty(), "no move goes down and sideways together");
+    assert!(p.warnings.is_empty());
+}
+
+#[test]
+fn designs_from_before_the_entry_setting_ramp_or_plunge_by_their_angle() {
+    let kind = r#"{"type": "pocket", "source": {"sketch": 1}, "ramp_angle": 3.0}"#;
+    let k: OpKind = serde_json::from_str(kind).unwrap();
+    assert_eq!(k.entry().map(|e| e.mode), Some(EntryMode::Ramp));
+    let k: OpKind = serde_json::from_str(r#"{"type": "contour", "source": {"sketch": 1}, "ramp_angle": 0.0}"#).unwrap();
+    assert_eq!(k.entry().map(|e| e.mode), Some(EntryMode::Plunge));
+    assert!(OpKind::Face { margin: 0.0, stepover: 0.5 }.entry().is_none());
+    // Saving without an entry keeps the saved form as it was.
+    let again = serde_json::to_value(serde_json::from_str::<OpKind>(kind).unwrap()).unwrap();
+    assert!(again.get("entry").is_none());
+    // The same path comes out whether the ramp is implied or asked for.
+    let region = geometry(vec![rect_region(0.0, 0.0, 60.0, 40.0)]);
+    let implied = plan(&setup(), &tool(1, 6.0), &pocket_op(0.4, false, 0.0), &region, 0.005).unwrap();
+    let asked = plan(&setup(), &tool(1, 6.0), &entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Ramp), 3.0, 3.0, 0.0), &region, 0.005).unwrap();
+    assert_eq!(implied.toolpath, asked.toolpath);
+}
+
+#[test]
+fn a_ramp_follows_the_ramp_angle_at_the_entry_feed() {
+    let region = geometry(vec![rect_region(0.0, 0.0, 60.0, 40.0)]);
+    let o = entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Ramp), 5.0, 3.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    let ramps = slanted(&p.toolpath);
+    assert!(!ramps.is_empty());
+    let max = 5.0f64.to_radians().tan();
+    for (a, b, feed) in &ramps {
+        let slope = (a.z - b.z) / Vec2::new(a.x, a.y).dist(Vec2::new(b.x, b.y));
+        assert!(slope <= max * 1.001, "steeper than 5 degrees: {slope}");
+        assert!(near(*feed, 200.0, 0.0), "the plunge feed set on the operation is the entry feed");
+    }
+    // With no plunge feed the ramp runs at the cutting feed.
+    let o = Operation { plunge_feed: 0.0, ..o };
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    assert!(slanted(&p.toolpath).iter().all(|(_, _, f)| near(*f, 600.0, 0.0)));
+}
+
+#[test]
+fn a_helical_entry_spirals_down_inside_the_pocket_at_the_helix_angle() {
+    let region = geometry(vec![rect_region(0.0, 0.0, 60.0, 40.0)]);
+    // One depth pass of 4 mm from the 1 mm feed plane: a 5 mm drop.
+    let o = Operation { stepdown: 4.0, ..entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Helical), 3.0, 5.0, 0.0) };
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    let helix = slanted(&p.toolpath);
+    assert!(helix.len() > 30, "{} moves", helix.len());
+    // The helix is a circle of 90% of the tool diameter, run at the entry feed, never steeper
+    // than asked, and never closer to the walls than the tool radius.
+    let n = helix.len() as f64;
+    let (cx, cy) = (helix.iter().map(|h| h.1.x).sum::<f64>() / n, helix.iter().map(|h| h.1.y).sum::<f64>() / n);
+    let max = 5.0f64.to_radians().tan();
+    for (a, b, feed) in &helix {
+        assert!(near(Vec2::new(b.x, b.y).dist(Vec2::new(cx, cy)), 2.7, 0.05), "{b:?} is off the circle");
+        assert!(b.x >= 3.0 - 1e-6 && b.x <= 57.0 + 1e-6 && b.y >= 3.0 - 1e-6 && b.y <= 37.0 + 1e-6, "{b:?} cuts into the wall");
+        assert!((a.z - b.z) / Vec2::new(a.x, a.y).dist(Vec2::new(b.x, b.y)) <= max * 1.001);
+        assert!(near(*feed, 200.0, 0.0));
+    }
+    // It reaches the floor, and the cut never goes below it.
+    let floor = feed_points(&p.toolpath).iter().fold(f64::INFINITY, |m, q| m.min(q.z));
+    assert!(near(floor, -4.0, 1e-9));
+    // A bigger helix diameter makes a bigger circle.
+    let wide = Operation { ..entering(o.clone(), Some(EntryMode::Helical), 3.0, 5.0, 8.0) };
+    let q = plan(&setup(), &tool(1, 6.0), &wide, &region, 0.005).unwrap();
+    let w = slanted(&q.toolpath);
+    let m = w.len() as f64;
+    let (wx, wy) = (w.iter().map(|h| h.1.x).sum::<f64>() / m, w.iter().map(|h| h.1.y).sum::<f64>() / m);
+    assert!(w.iter().all(|h| near(Vec2::new(h.1.x, h.1.y).dist(Vec2::new(wx, wy)), 4.0, 0.05)));
+}
+
+#[test]
+fn a_helical_pocket_with_several_depth_passes_stays_clear_of_the_walls() {
+    let region = geometry(vec![rect_region(0.0, 0.0, 60.0, 40.0)]);
+    let o = entering(pocket_op(0.4, true, 0.2), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    for q in feed_points(&p.toolpath) {
+        assert!(q.x >= 3.2 - 1e-6 - 0.2 && q.x <= 56.8 + 1e-6 + 0.2 && q.y >= 3.0 - 1e-6 && q.y <= 37.0 + 1e-6, "{q:?}");
+        assert!(q.z >= -4.0 - 1e-9 && q.z <= 1.0 + 1e-9);
+    }
+    assert!(!slanted(&p.toolpath).is_empty());
+}
+
+#[test]
+fn a_helix_that_does_not_fit_ramps_and_says_so() {
+    // 6.5 mm wide: the tool centre has 0.5 mm to move in, so no circle fits.
+    let region = geometry(vec![rect_region(0.0, 0.0, 6.5, 40.0)]);
+    let o = entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    assert!(p.warnings.iter().any(|w| w.contains("helical")), "{:?}", p.warnings);
+    let floor = feed_points(&p.toolpath).iter().fold(f64::INFINITY, |m, q| m.min(q.z));
+    assert!(near(floor, -4.0, 1e-9), "it still reaches the bottom");
+    for q in feed_points(&p.toolpath) {
+        assert!(q.x >= 3.0 - 1e-6 && q.x <= 3.5 + 1e-6, "{q:?}");
+    }
+}
+
+#[test]
+fn an_outside_contour_spirals_down_in_the_air_beside_the_part() {
+    let region = geometry(vec![rect_region(0.0, 0.0, 40.0, 20.0)]);
+    let o = entering(contour_op(Side::Outside, Direction::Climb, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    let helix = slanted(&p.toolpath);
+    assert!(!helix.is_empty());
+    for (_, b, _) in &helix {
+        let outside = b.x < 0.0 || b.x > 40.0 || b.y < 0.0 || b.y > 20.0;
+        let c = clearance(&[rect(0.0, 0.0, 40.0, 20.0)], Vec2::new(b.x, b.y));
+        assert!(outside && c >= 3.0 - 1e-6, "{b:?} reaches the part (clearance {c})");
+    }
+    // A contour that follows the line itself has no room for a helix and ramps.
+    let on = entering(contour_op(Side::On, Direction::Climb, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    let q = plan(&setup(), &tool(1, 6.0), &on, &region, 0.005).unwrap();
+    assert!(q.warnings.iter().any(|w| w.contains("helical")));
+}
+
+#[test]
+fn entry_settings_are_checked() {
+    let t = tool(1, 6.0);
+    let ok = entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    assert!(ok.validate(&t, &setup()).is_ok());
+    for (mode, ramp, helix, dia) in [
+        (Some(EntryMode::Ramp), 0.0, 3.0, 0.0),
+        (Some(EntryMode::Ramp), 60.0, 3.0, 0.0),
+        (Some(EntryMode::Helical), 3.0, 0.0, 0.0),
+        (Some(EntryMode::Helical), 3.0, 50.0, 0.0),
+        (Some(EntryMode::Helical), 3.0, f64::NAN, 0.0),
+        (Some(EntryMode::Helical), 3.0, 3.0, -1.0),
+        (Some(EntryMode::Helical), 3.0, 3.0, f64::INFINITY),
+    ] {
+        let o = entering(pocket_op(0.4, false, 0.0), mode, ramp, helix, dia);
+        assert!(o.validate(&t, &setup()).is_err(), "{mode:?} ramp {ramp} helix {helix} diameter {dia}");
+    }
+    // Older designs that plunge with a zero angle stay valid.
+    assert!(entering(pocket_op(0.4, false, 0.0), None, 0.0, 3.0, 0.0).validate(&t, &setup()).is_ok());
+}
+
+#[test]
+fn an_inside_contour_spirals_down_inside_the_outline() {
+    let region = geometry(vec![rect_region(0.0, 0.0, 40.0, 30.0)]);
+    let o = entering(contour_op(Side::Inside, Direction::Climb, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0);
+    let p = plan(&setup(), &tool(1, 6.0), &o, &region, 0.005).unwrap();
+    assert!(p.warnings.is_empty(), "{:?}", p.warnings);
+    let helix = slanted(&p.toolpath);
+    assert!(!helix.is_empty());
+    for (_, b, _) in &helix {
+        assert!(b.x >= 3.0 - 1e-6 && b.x <= 37.0 + 1e-6 && b.y >= 3.0 - 1e-6 && b.y <= 27.0 + 1e-6, "{b:?} reaches the wall");
+    }
+}
+
+#[test]
+fn a_helical_pocket_removes_the_same_material_as_a_ramped_one_without_collisions() {
+    let t = tool(1, 6.0);
+    let region = geometry(vec![rect_region(10.0, 10.0, 50.0, 30.0)]);
+    let run = |o: &Operation| {
+        let path = plan(&setup(), &t, o, &region, 0.005).unwrap().toolpath;
+        simulate(&stock_box(), None, &[SimOp { operation: 1, tool: &t, toolpath: &path }], &sim_opts(0.25)).unwrap()
+    };
+    let helical = run(&entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0));
+    let ramped = run(&entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Ramp), 3.0, 4.0, 0.0));
+    assert!(helical.collisions.is_empty(), "{:?}", helical.collisions);
+    assert!(near(helical.volumes.removed, ramped.volumes.removed, ramped.volumes.removed * 0.01), "{} against {}", helical.volumes.removed, ramped.volumes.removed);
+    // Nothing is cut outside the pocket.
+    let g = helical.grid;
+    let at = |x: f64, y: f64| helical.heights[((y - g.y0) / g.cell) as usize * g.nx + ((x - g.x0) / g.cell) as usize];
+    assert!(near(f64::from(at(8.0, 20.0)), 0.0, 1e-9) && near(f64::from(at(30.0, 20.0)), -4.0, 1e-4));
 }
