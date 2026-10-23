@@ -85,6 +85,7 @@ mod look_at_tests;
 mod manage_dialogs_tests;
 pub mod manufacture_job;
 pub mod manufacture_panel;
+pub mod manufacture_side;
 mod material_card_review;
 
 #[cfg(test)]
@@ -1554,7 +1555,11 @@ impl SolveApp {
         }
         theme::TabAccent::publish(self, ui.ctx());
         if !floating && show_timeline && !left_timeline {
-            timeline::timeline(self, ui);
+            if manufacture_side::active(self) {
+                manufacture_side::history(self, ui);
+            } else {
+                timeline::timeline(self, ui);
+            }
         }
         // A floating browser keeps the workspace the whole width and covers viewport input.
         let browser_float = self.ui.show_browser && (self.preferences.browser_float || (floating && !left_timeline));
@@ -1590,7 +1595,11 @@ impl SolveApp {
             theme::TabAccent::publish(self, ui.ctx());
         }
         if floating && show_timeline && !left_timeline {
-            timeline::timeline(self, ui);
+            if manufacture_side::active(self) {
+                manufacture_side::history(self, ui);
+            } else {
+                timeline::timeline(self, ui);
+            }
         }
         if self.ui.show_browser && !browser_float {
             if left_timeline {
@@ -1603,6 +1612,9 @@ impl SolveApp {
         }
         if render_workspace::active(self) {
             render_workspace::panel(self, ui);
+        }
+        if manufacture_side::active(self) && !self.home.open {
+            manufacture_side::panel(self, ui);
         }
         agent_chat::show(self, ui);
         if browser_float {

@@ -43,7 +43,7 @@ CommandSpec::new("manufacture.toolpath", "Plan Toolpath", toolpath).icon("measur
 CommandSpec::new("manufacture.post", "Post Process", post).icon("export").noundo().at("MANUFACTURE", "OUTPUT")
     .params("dialect: grbl|fanuc|haas, operations?: [numbers] (all, in order), program_name?, program_number?: 1001 (Fanuc/Haas O number), line_numbers?: false, tolerance?: 0.005, path?: write the program there (an existing file is kept unless overwrite: true), overwrite?: false. Returns {dialect, operations, lines, bytes, warnings} and the program text as `gcode` unless it was written to `path`. Does not change the design."),
 CommandSpec::new("manufacture.simulate", "Simulate Machining", simulate).icon("play").noundo().at("MANUFACTURE", "OUTPUT")
-    .params("setup?: number (the first setup), operations?: [numbers] (all in the setup, in order), resolution?: 0.5 (cell size, mm), tolerance? (how deep an overlap counts as a collision, mm; default one cell, at least 0.05), until?: move number to stop after, part?: true (check against the model's bodies; false: stock only), bodies?: [names] (default all), surface?: max cells of the stock surface to return for drawing (0/omitted: none), tolerance_chord?: 0.005. Cuts the setup's stock away along the toolpaths (a height map) and reports gouges into the model, shank hits (tool.flute_length), rapids through stock or the model, and cuts below the stock, with volumes removed and left over. Returns {setup, frame, grid, steps, total_steps, operations: [{operation, first_step}], volumes, counts, collisions, open_cells, tolerance, surface?}. Does not change the design. See docs/manufacture.md"),
+    .params("setup?: number (the first setup), operations?: [numbers] (all in the setup, in order), resolution?: 0.5 (cell size, mm), tolerance? (how deep an overlap counts as a collision, mm; default one cell, at least 0.05), until?: move number to stop after, part?: true (check against the model's bodies; false: stock only), bodies?: [names] (default all), surface?: max cells of the stock surface to return for drawing (0/omitted: none; at most 250000), tolerance_chord?: 0.005. Cuts the setup's stock away along the toolpaths (a height map) and reports gouges into the model, shank hits (tool.flute_length), rapids through stock or the model, and cuts below the stock, with volumes removed and left over. Returns {setup, frame, grid, steps, total_steps, operations: [{operation, first_step}], volumes, counts, collisions, open_cells, tolerance, surface?}. Does not change the design. See docs/manufacture.md"),
 ];
 
 fn job(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -526,7 +526,7 @@ fn simulate(s: &mut Session, p: &Value) -> Result<Value> {
         "tolerance": sim.tolerance,
     });
     if let Some(n) = p.get("surface").and_then(Value::as_u64).filter(|n| *n > 0) {
-        out["surface"] = json!(sim.surface(usize::try_from(n).unwrap_or(usize::MAX).min(40_000)));
+        out["surface"] = json!(sim.surface(usize::try_from(n).unwrap_or(usize::MAX).min(250_000)));
     }
     Ok(out)
 }

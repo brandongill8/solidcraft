@@ -11,8 +11,11 @@ use solidcraft_engine::geom::Vec3;
 use crate::SolveApp;
 use crate::theme::Tokens;
 
-/// Cells of the stock surface asked for when drawing.
-const SURFACE_CELLS: u64 = 20_000;
+/// How finely the stock is drawn: a name and the most surface cells asked for. More cells look
+/// smoother and cost more every time the program is stepped and every frame the view moves.
+const DETAILS: [(&str, u64); 4] = [("Draft", 10_000), ("Normal", 40_000), ("Fine", 120_000), ("Smooth", 250_000)];
+/// The detail a new window starts with (an index of `DETAILS`).
+const DEFAULT_DETAIL: usize = 2;
 /// Most path segments drawn in a frame.
 const MAX_SEGMENTS: usize = 60_000;
 /// Collisions listed in the window.
@@ -52,6 +55,12 @@ pub struct MfgPanel {
     /// Moves shown so far.
     pub step: usize,
     pub playing: bool,
+    /// How fast Play runs: 1 is the whole program in about five seconds.
+    pub speed: f64,
+    /// Part of a move not yet taken while playing slower than a move a frame.
+    carry: f64,
+    /// How finely the stock is drawn (an index of `DETAILS`).
+    pub detail: usize,
     pub show_stock: bool,
     pub show_path: bool,
     /// The design revision the report is for.
@@ -59,6 +68,8 @@ pub struct MfgPanel {
     report: Option<Report>,
     /// The surface at `.0` moves.
     surface: Option<(usize, Surface)>,
+    /// The detail `surface` was asked for.
+    surface_detail: usize,
     /// The last refusal.
     pub error: Option<String>,
 }
@@ -69,11 +80,15 @@ impl Default for MfgPanel {
             resolution: 1.0,
             step: 0,
             playing: false,
+            speed: 1.0,
+            carry: 0.0,
+            detail: DEFAULT_DETAIL,
             show_stock: true,
             show_path: true,
             revision: u64::MAX,
             report: None,
             surface: None,
+            surface_detail: DEFAULT_DETAIL,
             error: None,
         }
     }
@@ -130,7 +145,8 @@ fn load(app: &mut SolveApp, d: &mut MfgPanel) {
 
 /// The stock after `d.step` moves.
 fn load_surface(app: &mut SolveApp, d: &mut MfgPanel) {
-    let params = json!({"resolution": d.resolution, "until": d.step, "part": false, "surface": SURFACE_CELLS});
+    d.surface_detail = d.detail;
+    let params = json!({"resolution": d.resolution, "until": d.step, "part": false, "surface": DETAILS[d.detail.min(DETAILS.len() - 1)].1});
     match app.session.execute("manufacture.simulate", &params) {
         Ok(v) => {
             let s = &v["surface"];
@@ -165,7 +181,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     if d.report.is_none() && d.error.is_none() || d.revision != app.session.revision && d.error.is_none() {
         load(app, &mut d);
     }
-    if d.report.is_some() && d.surface.as_ref().is_none_or(|(s, _)| *s != d.step) {
+    if d.report.is_some() && (d.surface.as_ref().is_none_or(|(s, _)| *s != d.step) || d.surface_detail != d.detail) {
         load_surface(app, &mut d);
     }
     let total = d.report.as_ref().map_or(0, |r| r.total);
@@ -173,7 +189,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         if d.step >= total {
             d.playing = false;
         } else {
-            d.step = (d.step + (total / 300).max(1)).min(total);
+            // A move a frame at least when the speed is 1; slower speeds carry the rest over.
+            d.carry += (total as f64 / 300.0).max(1.0) * d.speed.clamp(0.05, 50.0);
+            let whole = d.carry.floor();
+            d.carry -= whole;
+            d.step = (d.step + whole as usize).min(total);
             ctx.request_repaint();
         }
     }
@@ -208,6 +228,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     rewind = crate::ui_kit::button(ui, "Rewind", crate::ui_kit::Button::Normal).clicked();
                     crate::ui_kit::checkbox(ui, "Show stock", &mut d.show_stock);
                     crate::ui_kit::checkbox(ui, "Show toolpath", &mut d.show_path);
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Speed");
+                    crate::ui_kit::slider(
+                        ui,
+                        &mut d.speed,
+                        0.05..=20.0,
+                        crate::ui_kit::Slider { format: |v| format!("{v:.2}x"), ..Default::default() },
+                    );
                 });
                 let counts = &r.reply["counts"];
                 let n = |k: &str| counts[k].as_u64().unwrap_or(0);
@@ -245,9 +274,21 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             }
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Resolution (mm)");
+                ui.label("Drawing detail");
+                for (i, (name, _)) in DETAILS.iter().enumerate() {
+                    if ui.selectable_label(d.detail == i, *name).clicked() {
+                        d.detail = i;
+                    }
+                }
+            })
+            .response
+            .on_hover_text("How finely the stock is drawn. Smoother looks better; Draft steps through the program faster.");
+            ui.horizontal(|ui| {
+                ui.label("Check resolution (mm)");
                 rerun = crate::ui_kit::number_field(ui, &mut d.resolution, 0.05..=10.0, 0.05, "").changed();
-            });
+            })
+            .response
+            .on_hover_text("The cell size of the machining check that finds gouges and measures what is removed. Smaller is more exact and slower. It does not change how the stock is drawn: that is Drawing detail.");
         },
     );
     if play {
@@ -319,56 +360,75 @@ fn paint_stock(
     stock_max: [f64; 2],
     (base, shade): (Color32, Color32),
 ) {
+    let (cx, cy) = (s.nx + 1, s.ny + 1);
     // Height at each cell corner: the mean of the cells that meet there.
-    let corner = |i: usize, j: usize| -> f64 {
-        let (mut sum, mut n) = (0.0, 0.0);
-        for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-            let (Some(ci), Some(cj)) = (i.checked_sub(di), j.checked_sub(dj)) else { continue };
-            if let Some(z) = (ci < s.nx && cj < s.ny).then(|| s.z.get(cj * s.nx + ci)).flatten() {
-                sum += f64::from(*z);
-                n += 1.0;
+    let mut sum = vec![0.0f32; cx * cy];
+    let mut count = vec![0u8; cx * cy];
+    for j in 0..s.ny {
+        for i in 0..s.nx {
+            let z = s.z.get(j * s.nx + i).copied().unwrap_or(0.0);
+            for (di, dj) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                let k = (j + dj) * cx + i + di;
+                if let (Some(a), Some(n)) = (sum.get_mut(k), count.get_mut(k)) {
+                    *a += z;
+                    *n += 1;
+                }
             }
         }
-        if n > 0.0 { sum / n } else { 0.0 }
-    };
-    let point = |i: usize, j: usize| -> Vec3 {
-        let x = (s.x0 + i as f64 * s.cell).min(stock_max[0].max(s.x0));
-        let y = (s.y0 + j as f64 * s.cell).min(stock_max[1].max(s.y0));
-        to_model(frame, Vec3::new(x, y, corner(i, j)))
-    };
+    }
+    let height: Vec<f32> = sum.iter().zip(&count).map(|(a, n)| a / f32::from((*n).max(1))).collect();
+    let h = |i: usize, j: usize| -> f64 { f64::from(height.get(j.min(cy - 1) * cx + i.min(cx - 1)).copied().unwrap_or(0.0)) };
     // Where the eye looks along, in model space.
     let (origin, dir) = proj.ray(proj.rect.center());
     let light = (-dir).normalized().unwrap_or(Vec3::Z);
-    let mut cells: Vec<(f64, [Pos2; 4], Color32)> = Vec::with_capacity(s.nx * s.ny);
-    for j in 0..s.ny {
-        for i in 0..s.nx {
-            let q = [point(i, j), point(i + 1, j), point(i + 1, j + 1), point(i, j + 1)];
-            let normal = (q[1] - q[0]).cross(q[3] - q[0]).normalized().unwrap_or(Vec3::Z);
-            let lit = normal.dot(light).abs() as f32;
-            let centre = (q[0] + q[2]) * 0.5;
-            let mut screen = [Pos2::ZERO; 4];
-            let mut ok = true;
-            for (k, p) in q.iter().enumerate() {
-                match proj.to_screen(*p) {
-                    Some(sp) => screen[k] = sp,
-                    None => ok = false,
+    // One vertex per corner with a normal from the slope around it, so the colour blends across
+    // cells instead of showing each one as a flat tile.
+    let mut mesh = egui::Mesh::default();
+    mesh.vertices.reserve(cx * cy);
+    let mut at: Vec<Option<Vec3>> = Vec::with_capacity(cx * cy);
+    let mut on_screen: Vec<bool> = Vec::with_capacity(cx * cy);
+    for j in 0..cy {
+        for i in 0..cx {
+            let x = (s.x0 + i as f64 * s.cell).min(stock_max[0].max(s.x0));
+            let y = (s.y0 + j as f64 * s.cell).min(stock_max[1].max(s.y0));
+            let p = to_model(frame, Vec3::new(x, y, h(i, j)));
+            let dzdx = (h(i + 1, j) - h(i.saturating_sub(1), j)) / (s.cell * if i == 0 || i + 1 >= cx { 1.0 } else { 2.0 });
+            let dzdy = (h(i, j + 1) - h(i, j.saturating_sub(1))) / (s.cell * if j == 0 || j + 1 >= cy { 1.0 } else { 2.0 });
+            let local = Vec3::new(-dzdx, -dzdy, 1.0);
+            let n = (frame[1] * local.x + frame[2] * local.y + frame[3] * local.z).normalized().unwrap_or(Vec3::Z);
+            let lit = n.dot(light).abs() as f32;
+            let colour = shade.lerp_to_gamma(base, 0.25 + 0.75 * lit);
+            match proj.to_screen(p) {
+                Some(sp) => {
+                    mesh.colored_vertex(sp, colour);
+                    on_screen.push(true);
+                }
+                None => {
+                    mesh.colored_vertex(Pos2::ZERO, colour);
+                    on_screen.push(false);
                 }
             }
-            if ok {
-                cells.push(((centre - origin).dot(dir), screen, shade.lerp_to_gamma(base, 0.25 + 0.75 * lit)));
+            at.push(Some(p));
+        }
+    }
+    let mut cells: Vec<(f64, [u32; 4])> = Vec::with_capacity(s.nx * s.ny);
+    for j in 0..s.ny {
+        for i in 0..s.nx {
+            let k = [j * cx + i, j * cx + i + 1, (j + 1) * cx + i + 1, (j + 1) * cx + i];
+            if k.iter().any(|v| !on_screen.get(*v).copied().unwrap_or(false)) {
+                continue;
             }
+            let (Some(Some(a)), Some(Some(c))) = (at.get(k[0]), at.get(k[2])) else { continue };
+            let centre = (*a + *c) * 0.5;
+            cells.push(((centre - origin).dot(dir), k.map(|v| v as u32)));
         }
     }
     // Far cells first, so near ones cover them.
     cells.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let mut mesh = egui::Mesh::default();
-    for (_, q, colour) in &cells {
-        let base = mesh.vertices.len() as u32;
-        for p in q {
-            mesh.colored_vertex(*p, *colour);
-        }
-        mesh.add_triangle(base, base + 1, base + 2);
-        mesh.add_triangle(base, base + 2, base + 3);
+    mesh.indices.reserve(cells.len() * 6);
+    for (_, [a, b, c, d]) in &cells {
+        mesh.add_triangle(*a, *b, *c);
+        mesh.add_triangle(*a, *c, *d);
     }
     painter.add(Shape::mesh(mesh));
 }
@@ -417,6 +477,41 @@ mod tests {
         h.step(&json!({"widget": "Rewind"})).unwrap();
         h.frames(2);
         assert_eq!(h.app.manufacture.as_ref().unwrap().step, 0);
+    }
+
+    #[test]
+    fn the_speed_and_the_drawing_detail_are_adjustable() {
+        let mut h = Harness::new();
+        block_with_pocket(&mut h);
+        h.step(&json!({"start": "manufacture.simulate"})).unwrap();
+        h.frames(3);
+        for label in ["Speed", "Drawing detail", "Check resolution (mm)"] {
+            assert!(h.widget(label).is_some(), "{label}");
+        }
+        let cells = |h: &Harness| h.app.manufacture.as_ref().unwrap().surface.as_ref().map(|(_, s)| s.nx * s.ny).unwrap_or(0);
+        // The window opens on Fine; Draft draws fewer cells and Smooth more.
+        h.app.manufacture.as_mut().unwrap().detail = 0;
+        h.frames(3);
+        let draft = cells(&h);
+        h.app.manufacture.as_mut().unwrap().detail = 3;
+        h.app.manufacture.as_mut().unwrap().resolution = 0.1;
+        h.app.manufacture.as_mut().unwrap().revision = u64::MAX;
+        h.frames(4);
+        let smooth = cells(&h);
+        assert!(draft > 0 && draft <= 10_000, "{draft}");
+        assert!(smooth > draft, "smooth {smooth} draft {draft}");
+        // Slower is fewer moves a frame; faster, more.
+        let moves = |h: &mut Harness, speed: f64| {
+            let d = h.app.manufacture.as_mut().unwrap();
+            d.speed = speed;
+            d.step = 0;
+            d.playing = true;
+            h.frames(10);
+            h.app.manufacture.as_ref().unwrap().step
+        };
+        let slow = moves(&mut h, 0.25);
+        let fast = moves(&mut h, 8.0);
+        assert!(fast > slow, "fast {fast} slow {slow}");
     }
 
     #[test]

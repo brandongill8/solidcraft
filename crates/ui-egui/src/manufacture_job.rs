@@ -942,6 +942,47 @@ fn program_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui) {
 // -------------------------------------------------------------------------------------- windows
 
 /// Draw the windows that are open. Called once per frame.
+/// What the history strip and the side panel hand to the windows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Item {
+    Tool,
+    Setup,
+    Operation,
+}
+
+/// The operation shown in full colour on the part, if any.
+pub fn focused_operation(app: &SolveApp) -> Option<u32> {
+    app.manufacture_job.as_ref().and_then(|w| w.focus_op)
+}
+
+/// Open the window of `item` with the entry `id` loaded for editing; with id 0 a new one.
+pub fn pick(app: &mut SolveApp, item: Item, id: u32) {
+    let tab = match item {
+        Item::Tool => TOOLS,
+        Item::Setup => SETUP,
+        Item::Operation => OPERATIONS,
+    };
+    open(app, tab);
+    let job = app.session.execute("manufacture.job", &json!({})).unwrap_or(Value::Null);
+    let find = |key: &str| job[key].as_array().and_then(|a| a.iter().find(|x| u(x, "id") == id)).cloned();
+    let Some(w) = app.manufacture_job.as_mut() else { return };
+    match item {
+        Item::Tool => w.tool = find("tools").map_or_else(ToolDraft::new, |x| load_tool(&x)),
+        Item::Setup => {
+            w.setup_fresh = false;
+            w.setup = find("setups").map_or_else(|| JobWindow::new().setup, |x| load_setup(&x));
+        }
+        Item::Operation => {
+            match find("operations") {
+                Some(x) => w.op = load_operation(&w.op, &x),
+                None => w.op.id = 0,
+            }
+            w.focus_op = (id != 0).then_some(id);
+            w.paths.revision = None;
+        }
+    }
+}
+
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let Some(mut w) = app.manufacture_job.take() else { return };
     if w.open.iter().any(|o| *o) {

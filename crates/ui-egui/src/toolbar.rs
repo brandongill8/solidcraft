@@ -938,9 +938,22 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             painter.line_segment([ws.right_top(), ws.right_bottom()], Stroke::new(1.0, t.border));
         }
         let render = crate::render_workspace::active(app);
-        let workspace_icon = if render { "ws_render" } else { "ws_design" };
+        let machining = app.ui.tab == "MANUFACTURE";
+        let workspace_icon = if render {
+            "ws_render"
+        } else if machining {
+            "gear"
+        } else {
+            "ws_design"
+        };
         icons::paint_icon(&painter, Rect::from_center_size(pos2(ws.center().x, ws.top() + 39.0), vec2(30.0, 30.0)), workspace_icon, 1.0);
-        ribbon_text(ui, pos2(ws.center().x, ws.top() + 69.0), app.tr(if render { "ui.render" } else { "ui.design" }), t.font_button, t.text, true);
+        ribbon_text(ui, pos2(ws.center().x, ws.top() + 69.0), app.tr(if render {
+                "ui.render"
+            } else if machining {
+                "ui.manufacture"
+            } else {
+                "ui.design"
+            }), t.font_button, t.text, true);
         let label = app.tr("ui.ribbon_workspace");
         let label_width =
             painter.layout_no_wrap(label.to_string(), FontId::proportional(crate::theme::Tokens::get().font_small), t.text_dim).size().x;
