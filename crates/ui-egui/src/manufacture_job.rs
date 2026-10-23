@@ -1200,6 +1200,8 @@ mod tests {
     #[test]
     fn every_tool_type_can_be_saved_from_the_window_and_edited() {
         let mut h = Harness::new();
+        // Tall enough that the whole window is on the screen: a click cannot reach a button below it.
+        h.size = egui::vec2(1600.0, 3000.0);
         super::open(&mut h.app, TOOLS);
         h.frames(2);
         for kind in 0..KINDS.len() {
@@ -1342,6 +1344,7 @@ mod tests {
     #[test]
     fn an_operation_made_in_the_window_shows_its_toolpath_without_simulating() {
         let mut h = Harness::new();
+        h.size = egui::vec2(1600.0, 3000.0);
         block_with_pocket(&mut h);
         super::open(&mut h.app, OPERATIONS);
         h.app.manufacture_job.as_mut().unwrap().op = {
