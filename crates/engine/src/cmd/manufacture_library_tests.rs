@@ -42,7 +42,11 @@ fn all_eight_tool_kinds_can_be_made_and_edited() {
 fn tools_are_saved_to_the_library_and_added_to_another_design() {
     let path = library_path("round-trip");
     let mut a = Session::default();
-    run(&mut a, "manufacture.tool.set", json!({"id": 3, "name": "10 mm bull nose", "kind": "bull_nose_end_mill", "diameter": 10.0, "corner_radius": 1.5, "flutes": 4}));
+    run(
+        &mut a,
+        "manufacture.tool.set",
+        json!({"id": 3, "name": "10 mm bull nose", "kind": "bull_nose_end_mill", "diameter": 10.0, "corner_radius": 1.5, "flutes": 4}),
+    );
     run(&mut a, "manufacture.tool.set", json!({"id": 4, "name": "Spot", "kind": "spot_drill", "diameter": 8.0, "tip_angle": 90.0}));
 
     // No file yet: an empty library.
@@ -156,9 +160,7 @@ fn entry_moves_are_saved_with_the_operation_and_change_the_toolpath() {
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "manufacture.tool.set", json!({"id": 1, "diameter": 6.0}));
     run(&mut s, "manufacture.setup.set", json!({"id": 1, "plane": "XY", "stock": {"min": [-5.0, -5.0, -3.0], "max": [45.0, 35.0, 0.0]}}));
-    let op = |entry: Value| {
-        json!({"id": 1, "setup": 1, "tool": 1, "kind": entry, "top": 0.0, "bottom": -3.0, "feed": 600.0, "spindle_rpm": 8000.0, "stepdown": 3.0})
-    };
+    let op = |entry: Value| json!({"id": 1, "setup": 1, "tool": 1, "kind": entry, "top": 0.0, "bottom": -3.0, "feed": 600.0, "spindle_rpm": 8000.0, "stepdown": 3.0});
     let pocket = |extra: Value| {
         let mut k = json!({"type": "pocket", "source": {"sketch": "Outline"}, "stepover": 0.5});
         for (key, v) in extra.as_object().unwrap() {
@@ -200,7 +202,25 @@ fn entry_moves_are_saved_with_the_operation_and_change_the_toolpath() {
     assert!(count_slanted(&mut s).0 > 0);
     assert!(run(&mut s, "manufacture.job", json!({}))["operations"][0]["kind"].get("entry").is_none());
     // Bad entry settings are refused.
-    for extra in [json!({"entry": "helical", "helix_angle": 0.0}), json!({"entry": "ramp", "ramp_angle": 0.0}), json!({"entry": "spiral"}), json!({"helix_diameter": -1.0})] {
+    for extra in [
+        json!({"entry": "helical", "helix_angle": 0.0}),
+        json!({"entry": "ramp", "ramp_angle": 0.0}),
+        json!({"entry": "spiral"}),
+        json!({"helix_diameter": -1.0}),
+    ] {
         assert!(s.execute("manufacture.operation.set", &op(pocket(extra.clone()))).is_err(), "{extra}");
     }
+}
+
+#[test]
+fn a_new_tool_starts_with_what_its_kind_usually_has() {
+    let mut s = Session::default();
+    for (kind, flutes, tip) in [("spot_drill", 2, 90.0), ("reamer", 6, 118.0), ("face_mill", 5, 118.0), ("shell_mill", 4, 118.0)] {
+        let out = run(&mut s, "manufacture.tool.set", json!({"kind": kind, "diameter": 10.0}));
+        assert_eq!(out["tool"]["flutes"], flutes, "{kind}");
+        assert_eq!(out["tool"]["tip_angle"], tip, "{kind}");
+    }
+    // What the caller gives wins.
+    let out = run(&mut s, "manufacture.tool.set", json!({"kind": "reamer", "diameter": 10.0, "flutes": 8}));
+    assert_eq!(out["tool"]["flutes"], 8);
 }

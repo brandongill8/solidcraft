@@ -356,7 +356,8 @@ impl OpKind {
     /// How a contour or pocket enters each depth (none for facing and drilling).
     pub fn entry(&self) -> Option<Entry> {
         match self {
-            OpKind::Contour { ramp_angle, entry, helix_angle, helix_diameter, .. } | OpKind::Pocket { ramp_angle, entry, helix_angle, helix_diameter, .. } => {
+            OpKind::Contour { ramp_angle, entry, helix_angle, helix_diameter, .. }
+            | OpKind::Pocket { ramp_angle, entry, helix_angle, helix_diameter, .. } => {
                 let mode = entry.unwrap_or(if *ramp_angle > 0.0 { EntryMode::Ramp } else { EntryMode::Plunge });
                 Some(Entry { mode, ramp_angle: *ramp_angle, helix_angle: *helix_angle, helix_diameter: *helix_diameter })
             }

@@ -664,7 +664,10 @@ fn operations_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui, job:
     let t = Tokens::get();
     crate::ui_kit::checkbox(ui, "Show toolpaths on the part", &mut w.show_paths);
     if w.show_paths {
-        note(ui, "Cutting moves are blue, moves down into the material (plunge, ramp, helix) orange, rapids grey. The operation you are editing is drawn in full colour.");
+        note(
+            ui,
+            "Cutting moves are blue, moves down into the material (plunge, ramp, helix) orange, rapids grey. The operation you are editing is drawn in full colour.",
+        );
     }
     let mut act: Option<(u8, u32)> = None;
     for op in job["operations"].as_array().into_iter().flatten() {
@@ -721,7 +724,8 @@ fn operations_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui, job:
                 }
             }
             _ => {
-                if run(app, w, OPERATIONS, "manufacture.operation.delete", json!({"id": id}), "Operation deleted").is_some() && w.focus_op == Some(id) {
+                if run(app, w, OPERATIONS, "manufacture.operation.delete", json!({"id": id}), "Operation deleted").is_some() && w.focus_op == Some(id)
+                {
                     w.focus_op = None;
                 }
             }
@@ -798,7 +802,8 @@ fn operations_tab(app: &mut SolveApp, w: &mut JobWindow, ui: &mut egui::Ui, job:
     if save {
         let d = w.op.clone();
         let source = json!({"sketch": d.sketch});
-        let entry = json!({"entry": ENTRY_IDS[d.entry.min(2)], "ramp_angle": d.ramp_angle, "helix_angle": d.helix_angle, "helix_diameter": d.helix_diameter});
+        let entry =
+            json!({"entry": ENTRY_IDS[d.entry.min(2)], "ramp_angle": d.ramp_angle, "helix_angle": d.helix_angle, "helix_diameter": d.helix_diameter});
         let with_entry = |mut kind: Value| {
             if let (Some(k), Some(e)) = (kind.as_object_mut(), entry.as_object()) {
                 k.extend(e.iter().map(|(a, b)| (a.clone(), b.clone())));
@@ -945,6 +950,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         if w.open[OPERATIONS] && w.show_paths {
             refresh_paths(app, &mut w, &job);
         }
+        #[allow(clippy::needless_range_loop)] // the index is also the tab id
         for tab in 0..TABS.len() {
             if !w.open[tab] {
                 continue;
@@ -952,10 +958,14 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             let mut open = true;
             let title = RichText::new(crate::i18n::tr_label(TABS[tab])).strong().size(t.font_button);
             // Side by side from the left, so opening a second window does not hide the first.
-            let at = ctx.content_rect().center() - egui::vec2(260.0 - 60.0 * tab as f32, 60.0 - 24.0 * tab as f32);
+            let screen = ctx.content_rect();
+            let at = screen.left_top() + egui::vec2(120.0 + 40.0 * tab as f32, 80.0 + 24.0 * tab as f32);
+            let room = (screen.height() - 160.0 - 24.0 * tab as f32).clamp(200.0, 900.0);
             crate::frame::window(ctx, title, crate::frame::Width::Wide)
                 .id(egui::Id::new(("sc_manufacture_window", tab)))
+                .pivot(egui::Align2::LEFT_TOP)
                 .default_pos(at)
+                .default_height(room)
                 .open(&mut open)
                 .resizable(true)
                 .show(ctx, |ui| {
@@ -965,7 +975,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     {
                         ui.label(RichText::new(m).color(if *error { t.error } else { t.text_dim }));
                     }
-                    egui::ScrollArea::vertical().id_salt(("mfg_job_scroll", tab)).show(ui, |ui| match tab {
+                    egui::ScrollArea::vertical().max_height(room).id_salt(("mfg_job_scroll", tab)).show(ui, |ui| match tab {
                         TOOLS => tools_tab(app, &mut w, ui, &job),
                         SETUP => setups_tab(app, &mut w, ui, &job),
                         OPERATIONS => operations_tab(app, &mut w, ui, &job),
@@ -1201,7 +1211,7 @@ mod tests {
     fn every_tool_type_can_be_saved_from_the_window_and_edited() {
         let mut h = Harness::new();
         // Tall enough that the whole window is on the screen: a click cannot reach a button below it.
-        h.call("ui.resize", json!({"width": 1600.0, "height": 3000.0}));
+        h.call("ui.resize", json!({"width": 1600, "height": 3000}));
         super::open(&mut h.app, TOOLS);
         h.frames(2);
         for kind in 0..KINDS.len() {
@@ -1213,9 +1223,9 @@ mod tests {
             if kind == 2 {
                 w.tool.corner_radius = 1.0;
             }
-            h.frames(2);
+            h.frames(6);
             h.step(&json!({"widget": "Add tool"})).unwrap();
-            h.frames(2);
+            h.frames(6);
         }
         let tools = &h.app.session.doc.manufacture.tools;
         assert_eq!(tools.len(), 8);
@@ -1298,7 +1308,11 @@ mod tests {
         let c = stock_corners(&d).unwrap();
         assert!(c[0].dist(Vec3::new(10.0, 20.0, 25.0)) < 1e-9);
         assert!(c[7].dist(Vec3::new(50.0, 50.0, 32.0)) < 1e-9);
-        assert!(c[1].dist(Vec3::new(50.0, 20.0, 25.0)) < 1e-9 && c[2].dist(Vec3::new(10.0, 50.0, 25.0)) < 1e-9 && c[4].dist(Vec3::new(10.0, 20.0, 32.0)) < 1e-9);
+        assert!(
+            c[1].dist(Vec3::new(50.0, 20.0, 25.0)) < 1e-9
+                && c[2].dist(Vec3::new(10.0, 50.0, 25.0)) < 1e-9
+                && c[4].dist(Vec3::new(10.0, 20.0, 32.0)) < 1e-9
+        );
         // Front plane: work Z is model +Y, work Y is model -Z.
         d.plane = 1;
         let c = stock_corners(&d).unwrap();
@@ -1344,7 +1358,7 @@ mod tests {
     #[test]
     fn an_operation_made_in_the_window_shows_its_toolpath_without_simulating() {
         let mut h = Harness::new();
-        h.call("ui.resize", json!({"width": 1600.0, "height": 3000.0}));
+        h.call("ui.resize", json!({"width": 1600, "height": 3000}));
         block_with_pocket(&mut h);
         super::open(&mut h.app, OPERATIONS);
         h.app.manufacture_job.as_mut().unwrap().op = {
@@ -1359,10 +1373,10 @@ mod tests {
             d.helix_angle = 4.0;
             d
         };
-        h.frames(3);
+        h.frames(8);
         assert!(window(&h).paths.ops.is_empty());
         h.step(&json!({"widget": "Add operation"})).unwrap();
-        h.frames(3);
+        h.frames(8);
         assert_eq!(h.app.session.doc.manufacture.operations.len(), 1, "{:?}", window(&h).message);
         let w = window(&h);
         assert_eq!(w.focus_op, Some(1), "the new operation is the one in full colour");

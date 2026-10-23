@@ -88,7 +88,20 @@ fn contour_op(side: Side, direction: Direction, allowance: f64) -> Operation {
     op(OpKind::Contour { source: source(), side, direction, allowance, ramp_angle: 3.0, entry: None, helix_angle: 3.0, helix_diameter: 0.0 }, 1)
 }
 fn pocket_op(stepover: f64, finish: bool, allowance: f64) -> Operation {
-    op(OpKind::Pocket { source: source(), direction: Direction::Climb, stepover, allowance, finish, ramp_angle: 3.0, entry: None, helix_angle: 3.0, helix_diameter: 0.0 }, 1)
+    op(
+        OpKind::Pocket {
+            source: source(),
+            direction: Direction::Climb,
+            stepover,
+            allowance,
+            finish,
+            ramp_angle: 3.0,
+            entry: None,
+            helix_angle: 3.0,
+            helix_diameter: 0.0,
+        },
+        1,
+    )
 }
 fn geometry(regions: Vec<Region2>) -> Geometry {
     Geometry { regions, sites: vec![] }
@@ -1032,7 +1045,12 @@ fn a_helical_pocket_removes_the_same_material_as_a_ramped_one_without_collisions
     let helical = run(&entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Helical), 3.0, 4.0, 0.0));
     let ramped = run(&entering(pocket_op(0.4, false, 0.0), Some(EntryMode::Ramp), 3.0, 4.0, 0.0));
     assert!(helical.collisions.is_empty(), "{:?}", helical.collisions);
-    assert!(near(helical.volumes.removed, ramped.volumes.removed, ramped.volumes.removed * 0.01), "{} against {}", helical.volumes.removed, ramped.volumes.removed);
+    assert!(
+        near(helical.volumes.removed, ramped.volumes.removed, ramped.volumes.removed * 0.01),
+        "{} against {}",
+        helical.volumes.removed,
+        ramped.volumes.removed
+    );
     // Nothing is cut outside the pocket.
     let g = helical.grid;
     let at = |x: f64, y: f64| helical.heights[((y - g.y0) / g.cell) as usize * g.nx + ((x - g.x0) / g.cell) as usize];

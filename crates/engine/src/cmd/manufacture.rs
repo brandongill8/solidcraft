@@ -119,6 +119,13 @@ fn tool_set(s: &mut Session, p: &Value) -> Result<Value> {
     if existing.is_none() && !m.contains_key("name") {
         m.insert("name".into(), json!(format!("Tool {id}")));
     }
+    // A new tool of a kind starts with what that kind usually has.
+    if existing.is_none()
+        && let Some(kind) = m.get("kind").and_then(|k| serde_json::from_value::<mf::ToolKind>(k.clone()).ok())
+    {
+        m.entry("flutes").or_insert_with(|| json!(kind.default_flutes()));
+        m.entry("tip_angle").or_insert_with(|| json!(kind.default_tip_angle()));
+    }
     let tool: mf::Tool = patched(existing.as_ref(), id, &m, cmd)?;
     tool.validate().map_err(|e| bad(cmd, e.to_string()))?;
     upsert(&mut job.tools, tool.clone(), |t| t.id == id);

@@ -308,16 +308,7 @@ struct Dive<'a> {
 
 impl<'a> Dive<'a> {
     fn new(op: &Operation, tool: &Tool, entry: Entry, tol: f64, fallbacks: &'a Cell<usize>) -> Dive<'a> {
-        Dive {
-            entry,
-            feed: op.feed,
-            plunge: op.plunge(),
-            entry_feed: op.entry_feed(),
-            clear: None,
-            tool_radius: tool.radius(),
-            tol,
-            fallbacks,
-        }
+        Dive { entry, feed: op.feed, plunge: op.plunge(), entry_feed: op.entry_feed(), clear: None, tool_radius: tool.radius(), tol, fallbacks }
     }
     fn with_clearance(&self, clear: &'a Clearance) -> Dive<'a> {
         Dive { clear: Some(clear), ..*self }

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcraft_manufacture as mf;
 
-use super::manufacture::{job_of, new_id, number_id, object, store, upsert};
 use super::CommandSpec;
+use super::manufacture::{job_of, new_id, number_id, object, store, upsert};
 use crate::params::bad;
 use crate::{Result, Session};
 
@@ -94,7 +94,8 @@ fn read(path: &Path, cmd: &str) -> Result<Library> {
 fn write(path: &Path, lib: &Library, cmd: &str) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(lib).map_err(|e| bad(cmd, e.to_string()))?;
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        solidcraft_io::vfs::create_dir_all(&dir.to_string_lossy()).map_err(|e| bad(cmd, format!("could not make the folder for the tool library: {e}")))?;
+        solidcraft_io::vfs::create_dir_all(&dir.to_string_lossy())
+            .map_err(|e| bad(cmd, format!("could not make the folder for the tool library: {e}")))?;
     }
     solidcraft_io::write_atomic(path, &bytes, false).map_err(|e| bad(cmd, format!("could not write the tool library: {e}")))
 }
