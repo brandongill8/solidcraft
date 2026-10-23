@@ -89,7 +89,7 @@ fn group(s: &mut Session, p: &Value) -> Result<Value> {
     let component = component_of(s, p, cmd)?;
     let items = keys(p, "items", cmd)?;
     let d = s.doc_mut();
-    let id = super::next_free_id(cmd, d.browser_groups.iter().map(|g| g.id))?;
+    let id = d.allocate_id()?;
     let name = match str_(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
         Some(n) if n.len() <= 128 => n.to_string(),
         Some(_) => return Err(bad(cmd, "`name` is too long")),
@@ -559,18 +559,24 @@ fn rename_body(s: &mut Session, p: &Value) -> Result<Value> {
         let first = f.body_names.first().is_some_and(|n| !n.trim().is_empty());
         f.body_names.get(i).is_none_or(|n| n.trim().is_empty()) && (f.shell_piece_order || i < f.body_names.len() || !first)
     };
-    let later: Vec<(u64, Vec<String>)> = match s.doc.features.iter().position(|f| f.id == fid) {
-        Some(at) if s.doc.features.get(at).is_some_and(|f| counted(f, k)) => s
+    // Bodies later features name after this one (`Top (1)`, a split's other piece) keep their
+    // names too: they would otherwise follow it, and break what names them (#3510).
+    let derived = format!("{old} (");
+    let at = s.doc.features.iter().position(|f| f.id == fid);
+    let counts = at.and_then(|at| s.doc.features.get(at)).is_some_and(|f| counted(f, k));
+    let later: Vec<(u64, Vec<String>)> = match at {
+        Some(at) => s
             .doc
             .features
             .iter()
             .skip(at + 1)
             .filter_map(|f| {
                 let made: Vec<String> = s.model.result(f.id)?.state.bodies.iter().filter(|x| x.feature == f.id).map(|x| x.name.clone()).collect();
-                (0..made.len()).any(|i| counted(f, i)).then_some((f.id, made))
+                let keep = (counts && (0..made.len()).any(|i| counted(f, i))) || made.iter().any(|n| n.starts_with(&derived));
+                keep.then_some((f.id, made))
             })
             .collect(),
-        _ => Vec::new(),
+        None => Vec::new(),
     };
     let d = s.doc_mut();
     for (id, made) in &later {
@@ -769,6 +775,26 @@ mod tests {
         assert!(s.execute("body.rename", &json!({"body": "Lid", "name": " "})).is_err());
         run(&mut s, "edit.undo", json!({}));
         assert_eq!(names(&s)[1], b);
+    }
+
+    /// #3510: each piece of a split is renamed on its own. Renaming the split body leaves the
+    /// other piece, and the features that use it, as they were.
+    #[test]
+    fn split_pieces_are_renamed_on_their_own() {
+        let ok = |s: &Session| s.model.results.iter().all(|r| r.error.is_none());
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [0, 0, -5], "body_name": "Top"}));
+        run(&mut s, "solid.split_body", json!({"body": "Top", "plane": "XY"}));
+        assert_eq!(names(&s), vec!["Top", "Top (1)"]);
+        run(&mut s, "solid.move", json!({"bodies": ["Top (1)"], "translate": [0, 0, -5]}));
+        run(&mut s, "body.rename", json!({"body": "Top", "name": "Upper"}));
+        assert_eq!(names(&s), vec!["Upper", "Top (1)"]);
+        assert!(ok(&s), "the move still finds the other piece");
+        run(&mut s, "body.rename", json!({"body": "Top (1)", "name": "Lower"}));
+        assert_eq!(names(&s), vec!["Upper", "Lower"]);
+        assert!(ok(&s), "the move follows the renamed piece");
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!(names(&s), vec!["Upper", "Top (1)"]);
     }
 
     /// #1108: a primitive's `targets` are its participants, kept beside its kind; a rename
@@ -1071,12 +1097,26 @@ mod tests {
     }
 
     #[test]
-    fn the_next_free_id_is_one_past_the_largest_and_never_wraps() {
-        use super::super::next_free_id;
-        assert_eq!(next_free_id("t", std::iter::empty()).unwrap(), 1);
-        assert_eq!(next_free_id("t", [3, 9, 4].into_iter()).unwrap(), 10);
-        assert_eq!(next_free_id("t", [u64::MAX - 1].into_iter()).unwrap(), u64::MAX);
-        assert!(next_free_id("t", [1, u64::MAX].into_iter()).is_err());
+    fn exhausted_shared_ids_refuse_a_group_without_changing_the_design() {
+        let mut s = Session::default();
+        s.doc_mut().next_id = u64::MAX;
+        let before = s.doc.to_json();
+        let result = s.execute("browser.group", &json!({"folder": "bodies"}));
+        assert!(result.is_err() && !matches!(result, Err(crate::EngineError::Internal(..))), "{result:?}");
+        assert_eq!(s.doc.to_json(), before);
+    }
+
+    #[test]
+    fn deleted_group_ids_are_not_reused_after_reopening() {
+        let mut s = Session::default();
+        let params = json!({"folder": "bodies"});
+        let first = run(&mut s, "browser.group", params.clone())["group"].as_u64().unwrap();
+        run(&mut s, "browser.ungroup", json!({"group": first}));
+        let doc = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+        *s.doc_mut() = doc;
+        let second = run(&mut s, "browser.group", params)["group"].as_u64().unwrap();
+        assert!(second > first, "deleted group {first} was reused as {second}");
+        assert!(s.execute("browser.rename_group", &json!({"group": first, "name": "Stale reference"})).is_err());
     }
 
     #[test]

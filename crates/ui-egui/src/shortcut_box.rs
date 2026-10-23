@@ -1,6 +1,7 @@
 //! Ribbon-anchored command search. Ranking comes from the registry; document results use
 //! existing feature-edit and parameter commands. JSON mode never starts an interactive tool.
 
+use crate::ui_kit::{Container, Surface};
 use egui::{Pos2, Rect, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::command_specs;
@@ -136,6 +137,7 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     let q = q.trim().to_lowercase();
     let mut v: Vec<(u32, Row)> = command_specs()
         .into_iter()
+        .filter(|c| !crate::workspace::AGENT_ONLY.contains(&c.id))
         .filter_map(|c| {
             let (home_tab, home_panel) = crate::workspace::destination(c).unwrap_or(("", ""));
             let (label, tab, panel) = (crate::i18n::tr_label(c.label), crate::i18n::tr_label(home_tab), crate::i18n::tr_label(home_panel));
@@ -354,8 +356,13 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let mut rows = Vec::new();
     let mut design = Vec::new();
     let mut mode = None;
-    let response =
-        crate::frame::area(egui::Id::new("sc_sbox")).fixed_pos(pos).order(egui::Order::Foreground).fade_in(false).constrain(false).show(ctx, |ui| {
+    let response = Container::new(ctx, Surface::Popup)
+        .area(egui::Id::new("sc_sbox"))
+        .fixed_pos(pos)
+        .order(egui::Order::Foreground)
+        .fade_in(false)
+        .constrain(false)
+        .show(ctx, |ui| {
             // Area rounds its origin; place the child at the exact interpolated bounds
             // so the field's right edge does not drift during expansion.
             ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_min_size(pos, vec2(field_size.x, height + field_size.y))), |ui| {
@@ -373,7 +380,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         ui_kit::SearchFieldGeometry {
                             height: field_size.y,
                             progress,
-                            radius: ui_kit::CommandSearch::field_radius(progress, app.ui.layout == crate::shell::LayoutMode::Floating),
+                            radius: ui_kit::CommandSearch::field_radius(progress, ui_kit::Container::new(ctx, ui_kit::Surface::Chrome).floating()),
                         },
                         MAX_QUERY,
                     );
@@ -656,6 +663,15 @@ mod tests {
         let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         other.sbox.load(&app.sbox.prefs());
         assert_eq!((other.sbox.pinned.clone(), other.sbox.recent.len()), (vec!["solid.extrude".to_string()], 2));
+    }
+
+    #[test]
+    fn solve_sketch_is_not_offered_but_the_command_remains() {
+        let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        for q in ["solve", "sketch.solve", ""] {
+            assert!(!search(&app, q).iter().any(|x| x.0 == "sketch.solve"), "{q:?}");
+        }
+        assert!(solidcraft_engine::find_command("sketch.solve").is_some(), "agents and MCP keep it");
     }
 
     /// The box shows each command's label and place in the current language, and finds a name

@@ -22,15 +22,22 @@
 //! more lenient (a value of the wrong type read as if the key were absent), the contract is the
 //! stricter of the two; that difference is what warn and strict surface.
 //!
-//! To convert a command: declare its parameters type in `commands.rs` (and its reply type, for
-//! an output schema), give its `CommandSpec` `checked!(…)`, `.contract(…)` and `.output(…)` as
-//! `solid.extrude` does, and add it to `schemas_and_the_key_check_agree` and, for messages it
-//! already gives, `strict_keeps_todays_errors`. Then run the whole test suite with the audit
-//! recorder (see `record.rs`): a call that succeeds today but breaks the contract is either a
-//! form the contract is missing or a caller's mistake.
+//! Contracts live in one module per command file: `features.rs` for `cmd/features.rs`,
+//! `inspect.rs` for `cmd/inspect.rs`, and so on, each with its own tests (`features_tests.rs`),
+//! so conversions of different command files touch different files (apart from a new
+//! module's line below).
+//!
+//! To convert a command: declare its parameters type in the module for its command file (and
+//! its reply type, for an output schema), creating the module if it is the file's first
+//! contract, from the shared types in [`types`] (the keys every feature takes come from
+//! [`FeatureCommon`], which `solid.box` and `solid.extrude` predate); give its `CommandSpec`
+//! `checked!(…)`, `.contract(…)` and `.output(…)` as `solid.extrude` does; and add it to that
+//! module's `schemas_and_the_key_check_agree` and, for messages it already gives,
+//! `strict_keeps_todays_errors`. Then run the whole test suite with the audit recorder (see
+//! `record.rs`): a call that succeeds today but breaks the contract is either a form the
+//! contract is missing or a caller's mistake.
 
 mod check;
-mod commands;
 #[cfg_attr(target_arch = "wasm32", path = "record_wasm.rs")]
 mod record;
 mod types;
@@ -38,8 +45,11 @@ mod types;
 #[cfg(test)]
 mod tests;
 
+// The contracts, by command file.
+pub mod features;
+pub mod inspect;
+
 pub use check::{Contract, Issue, ParamCheck, TypedContract, input_schema_for, output_schema_for, run_checked};
-pub use commands::{BoxParams, DescribeParams, DescribeResult, ExtrudeParams, FeatureResult};
 pub use types::*;
 
 /// A command's `run` that checks the call against `$contract` before running `$handler`

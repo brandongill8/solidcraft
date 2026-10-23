@@ -583,3 +583,201 @@ impl JsonSchema for ProfilesParam {
         })
     }
 }
+
+/// A face given to a command, as `face::face_ref` reads it: a point on the face (`[x, y, z]`,
+/// `{x, y, z}` or `{point}`) or its name as `model.faces` lists it (1 to 512 bytes; the
+/// schema's `maxLength` counts characters, so it can't say bytes). Whether it finds a face is
+/// checked by the handler, which has the design. (Not `solidcraft_doc::FacePick`, the stored
+/// pick.)
+#[derive(Clone, Debug, PartialEq)]
+pub enum FaceRef {
+    Point(Vec3),
+    Name(String),
+}
+
+impl<'de> Deserialize<'de> for FaceRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match crate::cmd::face_ref_form(&Value::deserialize(d)?) {
+            Ok(crate::cmd::FaceRefForm::Point(p)) => Ok(FaceRef::Point(p)),
+            Ok(crate::cmd::FaceRefForm::Name(n)) => Ok(FaceRef::Name(n.to_string())),
+            Err(why) => Err(D::Error::custom(whole(why))),
+        }
+    }
+}
+
+impl JsonSchema for FaceRef {
+    fn schema_name() -> Cow<'static, str> {
+        "FaceRef".into()
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let point = generator.subschema_for::<Point3>();
+        json_schema!({
+            "description": "A face: a point in mm on it ([x, y, z], {\"x\", \"y\", \"z\"} or {\"point\": [x, y, z]}), or its name as model.faces lists it (at most 512 bytes of UTF-8).",
+            "anyOf": [
+                point,
+                {"type": "object", "properties": {"point": point}, "required": ["point"]},
+                {"type": "string", "minLength": 1, "maxLength": 512}
+            ]
+        })
+    }
+}
+
+/// An edge given to a fillet or chamfer, as `features::edge_points` reads it: a point on the
+/// edge (`[x, y, z]`, `{x, y, z}` or `{point}`), else `{body, index}` in the body's edge order.
+/// The index is whole-number JSON, as `Value::as_u64` reads it: JSON Schema also counts `1.0`
+/// as an integer, which the reader refuses. Whether it finds an edge is checked by the handler,
+/// which has the design. (Not `solidcraft_doc::EdgeRef`, the stored edge position.)
+#[derive(Clone, Debug, PartialEq)]
+pub enum EdgeRef {
+    Point(Vec3),
+    Index { body: String, index: u64 },
+}
+
+impl<'de> Deserialize<'de> for EdgeRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match crate::cmd::edge_ref_form(&Value::deserialize(d)?) {
+            Ok(crate::cmd::EdgeRefForm::Point(p)) => Ok(EdgeRef::Point(p)),
+            Ok(crate::cmd::EdgeRefForm::Index { body, index }) => Ok(EdgeRef::Index { body: body.to_string(), index }),
+            Err(why) => Err(D::Error::custom(whole(why))),
+        }
+    }
+}
+
+impl JsonSchema for EdgeRef {
+    fn schema_name() -> Cow<'static, str> {
+        "EdgeRef".into()
+    }
+    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+        let point = generator.subschema_for::<Point3>();
+        json_schema!({
+            "description": "An edge: a point in mm on it ([x, y, z], {\"x\", \"y\", \"z\"} or {\"point\": [x, y, z]}), or {\"body\", \"index\"} in the body's edge order (an index written without a fraction).",
+            "anyOf": [
+                point,
+                {"type": "object", "properties": {"point": point}, "required": ["point"]},
+                {
+                    "type": "object",
+                    "properties": {"body": {"type": "string"}, "index": {"type": "integer", "minimum": 0, "maximum": u64::MAX}},
+                    "required": ["body", "index"]
+                }
+            ]
+        })
+    }
+}
+
+/// A list of 1 to 1000 picks, with the handler's messages for the list itself. Like the handler,
+/// it refuses `null`: an optional field of this type takes `present`.
+///
+/// The handler looks each pick up in the design before reading the next, so a call with a pick
+/// that finds nothing and a later malformed one fails today on the first and in strict on the
+/// second.
+macro_rules! pick_list {
+    ($(#[$doc:meta])* $name:ident, $item:ty, $not_list:literal, $count:literal, $description:literal) => {
+        $(#[$doc])*
+        #[derive(Clone, Debug, PartialEq)]
+        pub struct $name(pub Vec<$item>);
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+                let v = Value::deserialize(d)?;
+                let items = v.as_array().ok_or_else(|| D::Error::custom(whole($not_list)))?;
+                if items.is_empty() || items.len() > 1000 {
+                    return Err(D::Error::custom(whole($count)));
+                }
+                items.iter().map(|item| <$item>::deserialize(item).map_err(D::Error::custom)).collect::<Result<_, _>>().map($name)
+            }
+        }
+
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                let item = generator.subschema_for::<$item>();
+                json_schema!({"description": $description, "type": "array", "items": item, "minItems": 1, "maxItems": 1000})
+            }
+        }
+    };
+}
+
+pick_list!(
+    /// The `faces` of `solid.shell`, `solid.draft`, `solid.offset_face`, `solid.split_face` and
+    /// `face.delete`, as `features::face_points` reads them. (Extrude's `faces` is a
+    /// [`FacesParam`].)
+    FaceRefs,
+    FaceRef,
+    "`faces` must be a list of points or face names",
+    "select 1…1000 faces",
+    "The faces, 1 to 1000."
+);
+pick_list!(
+    /// The `edges` of `solid.fillet` and `solid.chamfer`, as `features::edge_points` reads them.
+    EdgeRefs,
+    EdgeRef,
+    "`edges` must be a list",
+    "select 1…1000 edges",
+    "The edges, 1 to 1000."
+);
+
+/// A sketch referred to by its feature id (a number) or its name, as `features::sketch_id` reads
+/// it, with its message for a top-level key (`path_sketch`, `solid.split_face`'s `sketch`…);
+/// for a nested one (a section's `sketch`) the message names the key as `sections[0].sketch`
+/// where the handler says `sections[].sketch`. The `sketch` that `features::feature_sketch`
+/// reads (extrude's, revolve's…) has another message and is an [`IdOrName`]. Where the reader
+/// refuses `null`, an optional field of this type takes `present`. Whether a sketch has that id
+/// or name is checked by the handler.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SketchRef(pub String);
+
+impl<'de> Deserialize<'de> for SketchRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        crate::cmd::sketch_key(Some(&Value::deserialize(d)?)).map(SketchRef).ok_or_else(|| D::Error::custom("must be a sketch id or name"))
+    }
+}
+
+impl JsonSchema for SketchRef {
+    fn schema_name() -> Cow<'static, str> {
+        "SketchRef".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"description": "A sketch's feature id (a number) or its name.", "type": ["number", "string"]})
+    }
+}
+
+/// The keys `features::add_feature` reads for every feature command, whatever else it takes:
+/// the feature's name, the new bodies' names and the bodies taking part. A feature command's
+/// parameters include it with
+///
+/// ```ignore
+/// #[serde(flatten, deserialize_with = "feature_common")]
+/// pub common: FeatureCommon,
+/// ```
+///
+/// Two keys `add_feature` also reads aren't here. `targets` it reads only for primitives; the
+/// other commands that read it are the ones that combine bodies. `operation` it reads for every
+/// feature (a cut where the active component has no bodies takes part in all of them), but only
+/// the commands that combine bodies take one; those declare it with their own type
+/// ([`OperationParam`] or [`ExtrudeOperation`]), and for the rest it is a caller's mistake.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize, JsonSchema)]
+pub struct FeatureCommon {
+    /// The feature's name in the timeline.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The new body's name.
+    #[serde(default)]
+    pub body_name: Option<String>,
+    /// Names for the new bodies, in order.
+    #[serde(default)]
+    pub body_names: Option<StringList>,
+    /// The bodies taking part; overrides the default scope.
+    #[serde(default)]
+    pub participants: Option<StringList>,
+}
+
+/// Deserializes a flattened [`FeatureCommon`] from the keys the parent doesn't take, and reports
+/// a problem as if its fields were the parent's own, with the key in the message and in the
+/// issue's path (serde's flatten otherwise loses the key). serde reads a flattened field after
+/// all the parent's own, so its problems come after theirs, including a missing key.
+pub fn feature_common<'de, D: Deserializer<'de>>(d: D) -> Result<FeatureCommon, D::Error> {
+    let v = Value::deserialize(d)?;
+    serde_path_to_error::deserialize(&v).map_err(|e| D::Error::custom(super::check::located(&e)))
+}

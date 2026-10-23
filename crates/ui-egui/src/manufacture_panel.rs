@@ -297,10 +297,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             run.runner.advance(want);
         }
     }
-    let mut open = true;
     let (mut play, mut rewind) = (false, false);
-    let title = RichText::new(crate::i18n::tr_label("Machining Simulation")).strong().size(t.font_button);
-    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_machining_simulation")).open(&mut open).resizable(true).show(
+    let closed = crate::ui_kit::Window::new(egui::Id::new("sc_machining_simulation"), "gear", crate::i18n::tr_label("Machining Simulation"))
+        .cards(2.0)
+        .show_body(
         ctx,
         |ui| {
             if let Some(e) = &d.error {
@@ -405,7 +405,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         d.time = 0.0;
         d.playing = false;
     }
-    if open {
+    if !closed {
         app.manufacture = Some(d);
     }
 }
@@ -413,10 +413,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
 /// The program in a window of its own, the line being run highlighted.
 fn gcode_window(ctx: &egui::Context, d: &mut MfgPanel, t: &Tokens) {
     let current = current_line(d);
-    let mut open = true;
     let mut dialect = d.dialect;
-    let title = RichText::new(crate::i18n::tr_label("G-code")).strong().size(t.font_button);
-    crate::frame::window(ctx, title, crate::frame::Width::Wide).id(egui::Id::new("sc_simulation_gcode")).open(&mut open).resizable(true).show(ctx, |ui| {
+    let closed = crate::ui_kit::Window::new(egui::Id::new("sc_simulation_gcode"), "gear", crate::i18n::tr_label("G-code")).cards(2.0).show_body(ctx, |ui| {
         crate::ui_kit::segmented(ui, &mut dialect, &DIALECT_NAMES, crate::ui_kit::Segments::default());
         let Some((lines, _)) = &d.program else {
             ui.label(RichText::new("No program").color(t.text_dim));
@@ -443,7 +441,7 @@ fn gcode_window(ctx: &egui::Context, d: &mut MfgPanel, t: &Tokens) {
     });
     d.dialect = dialect;
     d.followed = current;
-    if !open {
+    if closed {
         d.show_gcode = false;
     }
 }

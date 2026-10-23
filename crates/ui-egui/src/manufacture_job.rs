@@ -997,19 +997,14 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                 continue;
             }
             let mut open = true;
-            let title = RichText::new(crate::i18n::tr_label(TABS[tab])).strong().size(t.font_button);
             // Side by side from the left, so opening a second window does not hide the first.
             let screen = ctx.content_rect();
             let at = screen.left_top() + egui::vec2(120.0 + 40.0 * tab as f32, 80.0 + 24.0 * tab as f32);
             let room = (screen.height() - 160.0 - 24.0 * tab as f32).clamp(200.0, 900.0);
-            crate::frame::window(ctx, title, crate::frame::Width::Wide)
-                .id(egui::Id::new(("sc_manufacture_window", tab)))
-                .pivot(egui::Align2::LEFT_TOP)
-                .default_pos(at)
-                .default_height(room)
-                .open(&mut open)
-                .resizable(true)
-                .show(ctx, |ui| {
+            let closed = crate::ui_kit::Window::new(egui::Id::new(("sc_manufacture_window", tab)), "gear", crate::i18n::tr_label(TABS[tab]))
+                .cards(2.0)
+                .placed(egui::Align2::LEFT_TOP, at)
+                .show_body(ctx, |ui| {
                     if let Some((from, m, error)) = &w.message
                         && *from == tab
                         && !m.is_empty()
@@ -1023,6 +1018,9 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         _ => program_tab(app, &mut w, ui),
                     });
                 });
+            if closed {
+                open = false;
+            }
             if !open {
                 w.open[tab] = false;
             }

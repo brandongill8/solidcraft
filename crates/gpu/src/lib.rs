@@ -21,7 +21,6 @@ use wgpu::util::DeviceExt;
 
 pub mod capture;
 mod pbr;
-pub mod pick;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod select;
 pub mod view;
@@ -466,8 +465,9 @@ fn pack(plans: &[&TessPlan]) -> Result<Packed> {
                 push3(&mut data, *du);
                 push3(&mut data, *dv);
             }
-            EvalSurface::Nurbs { degree, knots, count, ctrl } => {
+            EvalSurface::Nurbs { degree, knots, count, ctrl, closed } => {
                 head[0] = 1;
+                head[11] = u32::from(closed[0]) | (u32::from(closed[1]) << 1);
                 head[1] = word(degree[0])?;
                 head[2] = word(degree[1])?;
                 head[3] = word(count[0])?;

@@ -64,6 +64,25 @@ fn total_volume(s: &mut Session) -> f64 {
     run(s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap()
 }
 
+#[test]
+fn imported_joints_do_not_reuse_deleted_ids() {
+    let path = frame_file("joint-ids");
+    let mut s = Session::default();
+    run(&mut s, "file.insert_step", json!({"path": path}));
+    let first: Vec<_> = s.doc.assembly.joints.iter().map(|j| j.id).collect();
+    assert!(!first.is_empty());
+    for id in &first {
+        run(&mut s, "joint.delete", json!({"joint": id}));
+    }
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    run(&mut s, "file.insert_step", json!({"path": path}));
+    assert!(!s.doc.assembly.joints.is_empty());
+    for joint in &s.doc.assembly.joints {
+        assert!(!first.contains(&joint.id), "import reused deleted joint {}", joint.id);
+        assert!(joint.id < s.doc.next_id, "import did not reserve joint {}", joint.id);
+    }
+}
+
 /// `up: "y"` turns the file's bodies a quarter turn about X, Y becoming Z: the frame's height
 /// lies along Z, and what was its depth now runs towards -Y.
 #[test]
@@ -170,8 +189,8 @@ fn wrong_up_and_names_are_refused() {
     assert_eq!(kinds(&s), ["BoxFeature", "BaseFeature"]);
 }
 
-/// `names` says what the bodies are called: the solid's own name (the default), the part's, or
-/// the assembly occurrence's. Repeated names are numbered as ever.
+/// Explicit naming choices select the solid, part or occurrence; automatic naming keeps
+/// meaningful solid names.
 #[test]
 fn the_bodies_are_named_after_the_solid_the_product_or_the_instance() {
     let path = frame_file("names");
@@ -185,6 +204,7 @@ fn the_bodies_are_named_after_the_solid_the_product_or_the_instance() {
     // The post is placed twice: one component, two occurrences, its body built once (#1386).
     let solids = ["Cut-Extrude3", "Boss-Extrude1"];
     assert_eq!(named(json!({"path": path})), solids);
+    assert_eq!(named(json!({"path": path, "names": "auto"})), solids);
     assert_eq!(named(json!({"path": path, "names": "solid"})), solids);
     assert_eq!(named(json!({"path": path, "names": "product"})), ["Plate", "Post"]);
     assert_eq!(named(json!({"path": path, "names": "Instance"})), ["Plate-1", "Post-1"]);
@@ -227,4 +247,30 @@ fn a_step_file_can_be_inserted_at_a_matrix() {
     let e = d.execute("file.insert_step", &json!({"path": path, "matrix": [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0]})).unwrap_err().to_string();
     assert!(e.contains("not rigid"), "{e}");
     assert!(d.doc.features.is_empty() && d.doc.occurrences.is_empty());
+}
+
+/// Generated body labels become part names, and the saved assembly retains its components
+/// and repeated placements without needing the source file.
+#[test]
+fn automatic_part_names_and_assembly_survive_reopening() {
+    let path = frame_file("automatic");
+    let text = std::fs::read_to_string(&path).unwrap().replace("'Cut-Extrude3'", "'Body1'").replace("'Boss-Extrude1'", "'Body 2 (3)'");
+    std::fs::write(&path, text).unwrap();
+    let mut s = Session::default();
+    let r = run(&mut s, "file.insert_step", json!({"path": path}));
+    assert_eq!(body_names(&s), ["Plate", "Post"]);
+    let top = r["component"].as_u64().unwrap();
+    let parts: Vec<_> = s.doc.components.iter().filter(|c| c.parent == top).collect();
+    assert_eq!(parts.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Plate", "Post"]);
+    assert_eq!(s.doc.occurrences.iter().filter(|o| o.component == parts[1].id && o.parent == top).count(), 2);
+    let design = std::path::Path::new(&path).with_file_name("automatic.solidcraft");
+    run(&mut s, "file.save_as", json!({"path": design.to_string_lossy()}));
+    std::fs::remove_file(&path).unwrap();
+    let mut again = Session::default();
+    run(&mut again, "doc.open", json!({"path": design.to_string_lossy()}));
+    assert_eq!(body_names(&again), ["Plate", "Post"]);
+    assert_eq!(again.doc.components, s.doc.components);
+    assert_eq!(again.doc.occurrences, s.doc.occurrences);
+    assert!(near(extent(&again).0, [0.0, 0.0, 0.0]) && near(extent(&again).1, [40.0, 34.0, 20.0]));
+    assert!((total_volume(&mut again) - (40.0 * 4.0 * 20.0 + 2.0 * 4.0 * 30.0 * 4.0)).abs() < 1e-6);
 }

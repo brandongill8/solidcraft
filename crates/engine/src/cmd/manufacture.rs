@@ -12,7 +12,7 @@ use solidcraft_doc::{FeatureKind, ProfileSel, select_profiles};
 use solidcraft_geom::{Plane, Vec3};
 use solidcraft_manufacture as mf;
 
-use super::{CommandSpec, next_free_id};
+use super::CommandSpec;
 use crate::params::bad;
 use crate::{Result, Session};
 
@@ -62,6 +62,12 @@ pub(super) fn number_id(v: &Value, what: &str, cmd: &str) -> Result<u32> {
 
 pub(super) fn required_id(p: &Value, key: &str, cmd: &str) -> Result<u32> {
     number_id(p.get(key).ok_or_else(|| bad(cmd, format!("`{key}` is required")))?, key, cmd)
+}
+
+/// One past the largest id; ids come from the design file, so one past the largest a `u64` holds is
+/// an error, not an overflow.
+fn next_free_id(cmd: &str, ids: impl Iterator<Item = u64>) -> Result<u64> {
+    ids.max().unwrap_or(0).checked_add(1).ok_or_else(|| bad(cmd, "this design has no ids left to give"))
 }
 
 pub(super) fn new_id(cmd: &str, ids: impl Iterator<Item = u32>) -> Result<u32> {

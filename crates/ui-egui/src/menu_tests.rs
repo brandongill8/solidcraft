@@ -262,6 +262,53 @@ fn component_menu_activates_grounds_and_pastes() {
 }
 
 #[test]
+fn move_shortcut_uses_the_selected_nested_instance_and_pending_position() {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    let parent = app.run("component.create", json!({"name":"Assembly"})).unwrap()["occurrence"].as_u64().unwrap();
+    let child = app.run("component.create", json!({"name":"Carriage"})).unwrap()["occurrence"].as_u64().unwrap();
+    app.run("solid.box", json!({"length":30,"width":20,"height":10})).unwrap();
+    let copy = app.run("occurrence.copy", json!({"occurrence":parent,"translate":[100,0,0]})).unwrap()["occurrence"].as_u64().unwrap();
+    let path = vec![copy, child];
+    app.run("component.activate", json!({"component":"root"})).unwrap();
+    app.run("occurrence.move", json!({"occurrence":child,"path":path,"translate":[5,0,0],"capture":false})).unwrap();
+    let baseline = app.session.pending_moves[&child];
+    app.run("select.set", json!({"items":[{"type":"occurrence","path":path}]})).unwrap();
+    crate::keymap::bind(&mut app, "solid.move", "Shift+M", false).unwrap();
+    crate::keymap::press(&mut app, "M");
+    assert!(app.tree.occurrence_move.is_none(), "the old shortcut was cleared");
+    app.ui.tab = "INSPECT".into();
+    crate::keymap::press(&mut app, "Shift+M");
+    assert_eq!(app.ui.tab, "MODEL", "starting component Move still selects the command's workspace tab");
+    let movement = app.tree.occurrence_move.as_ref().expect("component Move opens from its rebound shortcut");
+    assert_eq!(movement.occurrence, child);
+    assert_eq!(movement.path, path, "use the selected copy's path, not the component's first placement");
+    assert_eq!(movement.baseline, Some(baseline));
+    assert!(movement.had_pending);
+    assert!(app.dialog.is_none(), "the body Move dialog must not open too");
+    assert!(app.tree.capture_prompt.is_none(), "continuing a component move does not ask to capture it first");
+}
+
+#[test]
+fn move_shortcut_respects_grounding_and_keeps_body_selection_as_a_body_move() {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    let occurrence = app.run("component.create", json!({"name":"Carriage"})).unwrap()["occurrence"].as_u64().unwrap();
+    app.run("solid.box", json!({"length":30,"width":20,"height":10})).unwrap();
+    app.run("occurrence.ground", json!({"occurrence":occurrence,"grounded":true})).unwrap();
+    app.run("select.set", json!({"items":[{"type":"occurrence","path":[occurrence]}]})).unwrap();
+    crate::keymap::press(&mut app, "M");
+    assert!(app.tree.occurrence_move.is_none(), "a grounded component cannot move");
+    assert!(app.dialog.is_none(), "do not fall back to moving the grounded component's bodies");
+
+    app.run("occurrence.ground", json!({"occurrence":occurrence,"grounded":false})).unwrap();
+    app.run("select.set", json!({"items":[{"type":"body","name":"Body1"}]})).unwrap();
+    crate::keymap::press(&mut app, "M");
+    assert!(app.tree.occurrence_move.is_none(), "a body selection still edits geometry");
+    let dialog = app.dialog.as_ref().expect("body Move opens");
+    assert!(matches!(dialog.kind, crate::dialogs::Kind::Move { .. }));
+    assert_eq!(dialog.inputs[0].items, vec![solidcraft_engine::Sel::Body { name: "Body1".into() }]);
+}
+
+#[test]
 fn pick_runs_an_item_of_the_open_menu() {
     let mut app = sample_app();
     assert!(context_menu::pick(&mut app, "Fit").is_err(), "no menu open");
@@ -799,6 +846,41 @@ fn menus_near_the_window_corner_open_inward() {
             h.frames(2);
         }
     }
+}
+
+/// #3313: renaming a body by typing in the Rename box and pressing Enter (or Tab) renames it.
+#[test]
+fn typing_a_new_body_name_and_enter_renames_it() {
+    for confirm in ["Enter", "Tab"] {
+        let mut h = crate::scenario::Harness::new();
+        h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        let b = h.app.session.model.state().bodies[0].name.clone();
+        h.app.run("select.set", json!({"items": [{"type": "body", "name": b}]})).unwrap();
+        h.frames(2);
+        h.step(&json!({"key": "F2"})).unwrap();
+        h.frames(2);
+        assert!(h.app.menu.rename.is_some(), "F2 opens the Rename box");
+        h.step(&json!({"text": "Lid"})).unwrap();
+        h.frames(1);
+        h.step(&json!({"key": confirm})).unwrap();
+        h.frames(2);
+        let names: Vec<String> = h.app.session.model.state().bodies.iter().map(|b| b.name.clone()).collect();
+        assert_eq!(names, ["Lid"], "{confirm} renames the body; status {:?}", h.app.status);
+    }
+    // Escape still cancels.
+    let mut h = crate::scenario::Harness::new();
+    h.app.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+    let b = h.app.session.model.state().bodies[0].name.clone();
+    h.app.run("select.set", json!({"items": [{"type": "body", "name": b.clone()}]})).unwrap();
+    h.frames(2);
+    h.step(&json!({"key": "F2"})).unwrap();
+    h.frames(2);
+    h.step(&json!({"text": "Lid"})).unwrap();
+    h.frames(1);
+    h.step(&json!({"key": "Escape"})).unwrap();
+    h.frames(2);
+    assert!(h.app.menu.rename.is_none());
+    assert_eq!(h.app.session.model.state().bodies[0].name, b, "Escape keeps the old name");
 }
 
 #[test]

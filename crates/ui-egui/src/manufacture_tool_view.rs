@@ -187,7 +187,7 @@ fn flutes(v: &View, tool: &Tool, angle: f64) {
     for k in 0..n {
         let phase = angle + std::f64::consts::TAU * k as f64 / n as f64;
         let mut run: Vec<Pos2> = Vec::new();
-        let mut flush = |run: &mut Vec<Pos2>| {
+        let flush = |run: &mut Vec<Pos2>| {
             if run.len() > 1 {
                 v.painter.add(Shape::line(std::mem::take(run), Stroke::new(1.6, Color32::from_rgb(38, 42, 50))));
             }

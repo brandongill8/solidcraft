@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::SolveApp;
 use crate::manufacture_job::{self, Item};
 use crate::theme::Tokens;
+use crate::ui_kit::{Container, Edge, Surface};
 
 /// Width of the panel on the right.
 const PANEL_WIDTH: f32 = 260.0;
@@ -65,13 +66,17 @@ pub fn history(app: &mut SolveApp, ui: &mut egui::Ui) {
         app.shell.history = Some(rect);
         crate::scenario::publish_rect("history:card", rect);
         let mut child = ui.new_child(UiBuilder::new().id_salt("sc_manufacture_history").max_rect(rect));
-        ui.painter().add(crate::frame::shell_card(t.timeline).paint(rect));
+        ui.painter().add(Container::new(ui.ctx(), Surface::Panel).frame(ui.ctx(), t.timeline, crate::frame::Side::Left).paint(rect));
         child.set_clip_rect(rect);
         history_contents(app, &mut child);
     } else {
-        let response = egui::Panel::bottom("sc_manufacture_history").exact_size(40.0).frame(egui::Frame::NONE.fill(t.timeline)).show(ui, |ui| {
-            history_contents(app, ui);
-        });
+        let response = Container::new(ui.ctx(), Surface::Panel)
+            .edge("sc_manufacture_history", Edge::Bottom)
+            .exact_size(40.0)
+            .frame(Container::new(ui.ctx(), Surface::Panel).edge_frame(t.timeline))
+            .show(ui, |ui| {
+                history_contents(app, ui);
+            });
         crate::scenario::publish_rect("history:strip", response.response.rect);
     }
 }
@@ -134,12 +139,13 @@ pub fn panel(app: &mut SolveApp, ui: &mut egui::Ui) {
     let focus = manufacture_job::focused_operation(app);
     let mut pick: Option<(Item, u32)> = None;
     let mut remove: Option<(Item, u32)> = None;
-    let bottom = if floating { 48.0 } else { 0.0 };
-    let frame = egui::Frame::NONE
-        .fill(t.panel)
-        .inner_margin(egui::Margin::symmetric(t.space_6 as i8, t.space_6 as i8))
-        .outer_margin(egui::Margin { bottom: bottom as i8, ..Default::default() });
-    let response = egui::Panel::right("sc_manufacture_panel").exact_size(PANEL_WIDTH).resizable(false).frame(frame).show(ui, |ui| {
+    let _ = floating;
+    let response = Container::new(ui.ctx(), Surface::Panel)
+        .edge("sc_manufacture_panel", Edge::Right)
+        .exact_size(PANEL_WIDTH)
+        .resizable(false)
+        .frame(Container::new(ui.ctx(), Surface::Panel).edge_frame(t.panel).inner_margin(6))
+        .show(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             section(ui, "Tools", "New tool", Item::Tool, &mut pick, &mut remove, |ui, pick, remove| {
                 for tool in job["tools"].as_array().into_iter().flatten() {

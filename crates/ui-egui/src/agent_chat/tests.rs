@@ -1468,12 +1468,17 @@ fn a_long_message_keeps_the_buttons_in_the_window() {
     }
     h.frames(4);
     let bottom = |h: &crate::scenario::Harness| f64::from(h.app.agent_chat.panel_rect.map(|r| r.bottom()).expect("the panel is drawn"));
-    let [_, rest] = h.widget("Send").expect("the Send button is drawn");
-    let rest = bottom(&h) - rest;
+    let resting: Vec<_> = ["Send", "Attach view"]
+        .into_iter()
+        .map(|name| {
+            let [_, y] = h.widget(name).unwrap_or_else(|| panic!("{name} is drawn"));
+            (name, bottom(&h) - y)
+        })
+        .collect();
     h.app.agent_chat.input = "Please make the plate thicker and then add a fillet on every outside edge.\n".repeat(60);
     h.frames(8);
     let window = 1000.0;
-    for name in ["Send", "Attach view"] {
+    for (name, rest) in resting {
         let [_, y] = h.widget(name).unwrap_or_else(|| panic!("{name} is drawn"));
         assert!(y < window, "{name} is at {y}, below the window's bottom at {window}");
         // The box is pinned to the bottom and grows upwards: the buttons stay where they were
@@ -1698,4 +1703,21 @@ fn an_attached_picture_and_the_views_picture_share_the_viewer() {
     chat.keep_picture(Some(0), encoded(image::ImageFormat::Png, 8));
     let Some(Item::User { pictures, .. }) = chat.items.last() else { panic!("a sent message") };
     assert_eq!(pictures.len(), 2);
+}
+
+/// Settings › AI › Add agent opens its dialog from the Home tab too (#3483, #3513).
+#[test]
+fn add_agent_opens_its_dialog_from_home() {
+    use crate::scenario::handle_at;
+    let mut h = crate::scenario::Harness::new();
+    h.call("ui.resize", json!({"width": 1600.0, "height": 1000.0}));
+    h.call("ui.home", json!({"open": true}));
+    h.call("ui.prefs", json!({"open": "AI"}));
+    h.frames(4);
+    assert!(h.app.home.open, "Home is showing");
+    let add = handle_at("prefs:ai_add").expect("Add agent is drawn");
+    h.call("ui.click", json!({"x": add.x, "y": add.y}));
+    h.frames(4);
+    assert!(h.app.agent_chat.settings.add.is_some(), "Add agent opened its dialog");
+    assert!(handle_at("ai_add:add").is_some(), "the dialog is drawn over Home");
 }

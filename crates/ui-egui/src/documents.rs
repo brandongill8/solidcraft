@@ -4,6 +4,7 @@
 //! Closing a design with unsaved changes asks first, and so does quitting: one "save changes?"
 //! per design with unsaved changes ([`request_quit`]).
 
+use crate::ui_kit::{Container, Surface};
 use egui::{FontId, Rect, Sense, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::Session;
@@ -22,7 +23,6 @@ pub struct DocSlot {
     pub(crate) autosave: Option<solidcraft_engine::recovery::Autosaver>,
     pub(crate) big_operation: bool,
     cam: Camera,
-    pre_sketch_cam: Option<Camera>,
     pre_sketch_marker: Option<Option<usize>>,
     view: DocView,
     occurrence_move: Option<crate::browser::OccMove>,
@@ -32,7 +32,6 @@ pub struct DocSlot {
 #[derive(Clone, Debug, Default)]
 struct DocView {
     render: crate::render_workspace::ViewState,
-    sketch_choices: crate::sketch_families::Choices,
     hidden_profiles: Vec<u64>,
     shown_dims: Vec<u64>,
     locked_bodies: Vec<String>,
@@ -45,7 +44,6 @@ impl DocSlot {
             autosave: None,
             big_operation: false,
             cam: Camera::default(),
-            pre_sketch_cam: None,
             pre_sketch_marker: None,
             view: DocView::default(),
             occurrence_move: None,
@@ -66,6 +64,10 @@ pub struct Documents {
     pub choice: Answer,
     /// Save As is answering a Close/Quit prompt.
     saving: bool,
+    /// Close Other Tabs / Close All Tabs: the tabs still to close, in increasing order (the last
+    /// is closed first, so the ones before it keep their places). One with unsaved changes asks
+    /// first; Cancel stops the rest (#3055).
+    pub batch: Option<Vec<usize>>,
 }
 
 impl Documents {
@@ -83,7 +85,6 @@ fn take_view(app: &mut SolveApp) -> DocView {
     let u = &mut app.ui;
     DocView {
         render: std::mem::take(&mut app.render_workspace.view),
-        sketch_choices: std::mem::take(&mut app.sketch_choices),
         hidden_profiles: std::mem::take(&mut u.hidden_profiles),
         shown_dims: std::mem::take(&mut u.shown_dims),
         locked_bodies: std::mem::take(&mut u.locked_bodies),
@@ -94,7 +95,6 @@ fn put_view(app: &mut SolveApp, v: DocView) {
     app.render_workspace.view = v.render;
     crate::render_workspace::invalidate_scene(app);
     crate::render_workspace::sync_backend(app);
-    app.sketch_choices = v.sketch_choices;
     let u = &mut app.ui;
     u.hidden_profiles = v.hidden_profiles;
     u.shown_dims = v.shown_dims;
@@ -115,7 +115,6 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
     app.design_properties = None;
     app.bom = None;
     app.cancel_view_animation();
-    app.viewport.orbit_snap = None;
     app.viewport.orbit_free = None;
     app.preview.reset();
     app.viewport.hover = None;
@@ -127,7 +126,6 @@ fn swap_in(app: &mut SolveApp, slot: DocSlot) -> DocSlot {
         autosave: app.autosave.as_mut().and_then(|a| std::mem::replace(&mut a.active, slot.autosave)),
         big_operation: std::mem::replace(&mut app.big_operation, slot.big_operation),
         cam: std::mem::replace(&mut app.cam, slot.cam),
-        pre_sketch_cam: std::mem::replace(&mut app.pre_sketch_cam, slot.pre_sketch_cam),
         pre_sketch_marker: std::mem::replace(&mut app.pre_sketch_marker, slot.pre_sketch_marker),
         view: take_view(app),
         occurrence_move: std::mem::replace(&mut app.tree.occurrence_move, slot.occurrence_move),
@@ -197,7 +195,6 @@ pub fn adopt(app: &mut SolveApp, session: Session) {
         crate::sketch_attachment_ui::clear(app);
         app.session.replace_design(session);
         crate::render_workspace::reset_document(app);
-        app.sketch_choices = crate::sketch_families::Choices::default();
         app.session.invalidate_view(rev);
         app.cam = Camera::default();
         app.fit_view();
@@ -225,8 +222,8 @@ pub fn new_design(app: &mut SolveApp) {
     }
 }
 
-/// The tab strip's +: always a new tab, except over the blank design the start page covers
-/// (a launch), which New takes as [`new_design`] does.
+/// Create a new tab directly; the File view chooses units before using [`new_design`].
+/// An untouched blank launch design is reused.
 pub fn new_tab(app: &mut SolveApp) {
     if app.file_picker_busy() {
         return;
@@ -307,6 +304,37 @@ pub fn close(app: &mut SolveApp, i: usize, force: bool) {
     }
 }
 
+/// Close several tabs (Close Other Tabs, Close All Tabs; #3055): each with unsaved changes asks
+/// "save changes?" in turn, the others close; Cancel keeps the tabs not closed yet.
+pub fn close_many(app: &mut SolveApp, mut tabs: Vec<usize>) {
+    if app.file_picker_busy() || app.docs.quitting.is_some() || app.docs.closing.is_some() {
+        return;
+    }
+    tabs.sort_unstable();
+    tabs.dedup();
+    app.docs.batch = Some(tabs);
+    batch_step(app);
+}
+
+/// Close the next tab of [`close_many`]'s batch, or ask about it when it has unsaved changes.
+fn batch_step(app: &mut SolveApp) {
+    if app.docs.closing.is_some() || app.docs.quitting.is_some() {
+        return;
+    }
+    let Some(mut left) = app.docs.batch.take() else { return };
+    while let Some(i) = left.pop() {
+        if i >= app.docs.count() {
+            continue;
+        }
+        if dirty(app, i) {
+            app.docs.closing = Some(i);
+            app.docs.batch = Some(left);
+            return;
+        }
+        close(app, i, true);
+    }
+}
+
 /// Quit (the title bar's ×, File ▸ Quit, the window being closed): asks "save changes?" for each
 /// design with unsaved changes, then sets `app.quit_requested` for the host to close the window.
 /// Cancel, or a Save that didn't save, stays open.
@@ -371,13 +399,19 @@ pub fn tabs_info(app: &SolveApp) -> Vec<(String, bool)> {
 }
 
 /// The control channel's `ui.documents`: list, `new`, `switch`, `close` (by index; `force`
-/// closes without asking) or `quit`; `answer`: save | dont_save | cancel answers "save changes?".
+/// closes without asking), `close_others` (all but `index`), `close_all` or `quit`; `answer`:
+/// save | dont_save | cancel answers "save changes?".
 pub fn control(app: &mut SolveApp, p: &Value) -> Value {
     let i = p.get("index").and_then(Value::as_u64).map(|x| x as usize);
     match p.get("action").and_then(Value::as_str) {
         Some("new") => new_design(app),
         Some("switch") => switch(app, i.unwrap_or(app.docs.active)),
         Some("close") => close(app, i.unwrap_or(app.docs.active), p.get("force").and_then(Value::as_bool).unwrap_or(false)),
+        Some("close_others") => {
+            let keep = i.unwrap_or(app.docs.active);
+            close_many(app, (0..app.docs.count()).filter(|k| *k != keep).collect());
+        }
+        Some("close_all") => close_many(app, (0..app.docs.count()).collect()),
         Some("quit") => request_quit(app),
         _ => {}
     }
@@ -391,7 +425,7 @@ pub fn control(app: &mut SolveApp, p: &Value) -> Value {
         answer_prompt(app, a);
     }
     let tabs: Vec<Value> = tabs_info(app).into_iter().map(|(name, dirty)| json!({"name": name, "dirty": dirty})).collect();
-    json!({"documents": tabs, "active": app.docs.active, "closing": app.docs.closing, "quitting": app.docs.quitting.is_some()})
+    json!({"documents": tabs, "active": app.docs.active, "closing": app.docs.closing, "quitting": app.docs.quitting.is_some(), "batch": app.docs.batch})
 }
 
 /// The document tabs in the application bar, from `x0` to `x1`: click to switch, × to close,
@@ -416,6 +450,9 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         })
         .collect();
     let fit_all = shown == n && natural.iter().sum::<f32>() <= x1 - x0 - 34.0;
+    // A right-click on a tab opens its menu (#3055): the tab and where the menu opens.
+    let menu_id = egui::Id::new("sc_doc_tab_menu");
+    let mut menu: Option<(usize, egui::Pos2)> = ui.ctx().data(|d| d.get_temp(menu_id));
     for (i, (name, dirty)) in info.iter().enumerate().skip(first).take(shown) {
         let w = if fit_all { natural.get(i).copied().unwrap_or(w) } else { w };
         let tr = Rect::from_min_size(pos2(x, r.top() + 4.0), vec2(w - 2.0, r.height() - 8.0));
@@ -460,6 +497,9 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
                 if xresp.hovered() || xresp.has_focus() { 1.0 } else { 0.55 },
             );
         }
+        if resp.secondary_clicked() {
+            menu = Some((i, ui.ctx().pointer_interact_pos().unwrap_or(tr.left_bottom())));
+        }
         if xresp.on_hover_text("Close").clicked() {
             shut = Some(i);
         } else if resp.on_hover_text(name.as_str()).clicked() {
@@ -487,8 +527,11 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
             ui.ctx().data_mut(|d| d.insert_temp(id, !d.get_temp::<bool>(id).unwrap_or(false)));
         }
         if ui.ctx().data(|d| d.get_temp::<bool>(id).unwrap_or(false)) {
-            let resp =
-                crate::frame::area(id.with("area")).fixed_pos(pos2(mr.left(), r.bottom())).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+            let resp = Container::new(ui.ctx(), Surface::Popup)
+                .area(id.with("area"))
+                .fixed_pos(pos2(mr.left(), r.bottom()))
+                .order(egui::Order::Foreground)
+                .show(ui.ctx(), |ui| {
                     crate::context_menu::menu_frame(ui, |ui| {
                         for (i, (name, dirty)) in info.iter().enumerate() {
                             let label = format!("{name}{}", if *dirty { " •" } else { "" });
@@ -505,7 +548,46 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
         }
         x += 26.0;
     }
-    // New design: a new tab showing the start page.
+    // The tab's menu: close it, the others, or all of them.
+    let mut many: Option<Vec<usize>> = None;
+    if let Some((i, at)) = menu.filter(|(i, _)| *i < n) {
+        let items = [("ui.closeTab", "Close"), ("ui.closeOtherTabs", "Close Other Tabs"), ("ui.closeAllTabs", "Close All Tabs")];
+        let resp =
+            Container::new(ui.ctx(), Surface::Popup).area(menu_id.with("area")).fixed_pos(at).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
+                crate::context_menu::menu_frame(ui, |ui| {
+                    let mut chosen = None;
+                    for (id, label) in items {
+                        let mut item = crate::context_menu::Item::action(id, label, "");
+                        item.enabled = id != "ui.closeOtherTabs" || n > 1;
+                        let top = ui.cursor().top();
+                        let row = crate::context_menu::list_row(ui, &item);
+                        let rect = Rect::from_min_max(pos2(ui.min_rect().left(), top), pos2(ui.min_rect().right(), ui.cursor().top()));
+                        crate::scenario::publish_handle(&format!("tab_menu:{id}"), rect.center());
+                        if row.is_some() {
+                            chosen = Some(id);
+                        }
+                    }
+                    chosen
+                })
+            });
+        match resp.inner {
+            Some("ui.closeTab") => shut = Some(i),
+            Some("ui.closeOtherTabs") => many = Some((0..n).filter(|k| *k != i).collect()),
+            Some("ui.closeAllTabs") => many = Some((0..n).collect()),
+            _ => {}
+        }
+        let pressed_outside = ui.ctx().input(|x| x.pointer.any_pressed()) && !resp.response.contains_pointer();
+        menu = if resp.inner.is_some() || pressed_outside || ui.ctx().input(|x| x.key_pressed(egui::Key::Escape)) { None } else { Some((i, at)) };
+    }
+    ui.ctx().data_mut(|d| match menu {
+        Some(m) => {
+            d.insert_temp(menu_id, m);
+        }
+        None => {
+            d.remove::<(usize, egui::Pos2)>(menu_id);
+        }
+    });
+    // Choose a new design, open or sample from the File view before creating a tab.
     let pr = Rect::from_center_size(pos2(x + 14.0, r.center().y), vec2(22.0, 22.0));
     let presp = ui.interact(pr, ui.id().with("doc_new"), Sense::click());
     if presp.hovered() {
@@ -519,11 +601,13 @@ pub fn tabs(app: &mut SolveApp, ui: &mut egui::Ui, r: Rect, x0: f32, x1: f32) {
     );
     // A file loading into the window keeps the tabs as they are (dragging still moves it).
     let idle = !app.file_load.busy();
-    if presp.on_hover_text("New Design (Ctrl+N)").clicked() && idle {
-        new_tab(app);
+    crate::scenario::publish_handle("tab:new", pr.center());
+    if presp.on_hover_text(app.tr("ui.start_page")).clicked() && idle {
+        app.home.show(app.session.revision);
     }
     match (shut, pick) {
         _ if !idle => {}
+        _ if many.is_some() => close_many(app, many.unwrap_or_default()),
         (Some(i), _) => close(app, i, false),
         (None, Some(i)) => switch(app, i),
         (None, None) => {}
@@ -653,9 +737,11 @@ pub fn answer_prompt(app: &mut SolveApp, answer: Answer) {
         Answer::Cancel => {
             app.docs.closing = None;
             app.docs.quitting = None;
+            app.docs.batch = None;
         }
     }
     quit_step(app);
+    batch_step(app);
 }
 
 /// Resume Close/Quit only after Save As has answered and the write succeeded.
@@ -671,8 +757,12 @@ pub(crate) fn saved_for_close(app: &mut SolveApp) {
         }
     } else if saved {
         close(app, app.docs.active, true);
+    } else {
+        // Save As cancelled: the tabs not closed yet stay.
+        app.docs.batch = None;
     }
     quit_step(app);
+    batch_step(app);
 }
 
 #[cfg(test)]
@@ -732,6 +822,68 @@ mod tests {
         }
     }
 
+    /// Four tabs: the first and third with a part (unsaved), the second and fourth blank.
+    fn four_tabs() -> SolveApp {
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        open_tab(&mut a, Session::default()).unwrap();
+        open_tab(&mut a, Session::default()).unwrap();
+        a.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+        open_tab(&mut a, Session::default()).unwrap();
+        assert_eq!(a.docs.count(), 4);
+        a
+    }
+
+    /// #3055: Close Other Tabs on the first tab closes the blank fourth, asks about the third
+    /// (unsaved), and after Don't Save closes it and the blank second: the first is left, its
+    /// part as it was.
+    #[test]
+    fn close_other_tabs_asks_about_unsaved_ones_and_keeps_the_tab() {
+        let mut a = four_tabs();
+        let v = control(&mut a, &json!({"action": "close_others", "index": 0}));
+        assert_eq!(v["closing"], json!(2), "{v}");
+        assert_eq!(a.docs.count(), 3, "the blank fourth closed without asking");
+        let v = control(&mut a, &json!({"answer": "dont_save"}));
+        assert_eq!(a.docs.count(), 1, "{v}");
+        assert!(a.docs.closing.is_none() && a.docs.batch.is_none());
+        let volume = a.run("inspect.measure", json!({})).unwrap()["total"]["volume_mm3"].as_f64().unwrap();
+        assert!((volume - 1000.0).abs() < 1e-6, "the first tab's part: {volume}");
+    }
+
+    /// #3055: Close All Tabs, and Cancel at the first question: the tabs not closed yet stay.
+    /// Close All Tabs on blank designs leaves one blank design.
+    #[test]
+    fn close_all_tabs_stops_at_cancel_and_ends_on_a_blank_design() {
+        let mut a = four_tabs();
+        control(&mut a, &json!({"action": "close_all"}));
+        assert_eq!((a.docs.count(), a.docs.closing), (3, Some(2)));
+        control(&mut a, &json!({"answer": "cancel"}));
+        assert_eq!((a.docs.count(), a.docs.closing, a.docs.batch.clone()), (3, None, None), "Cancel keeps the rest");
+        control(&mut a, &json!({"action": "close_all"}));
+        control(&mut a, &json!({"answer": "dont_save"}));
+        control(&mut a, &json!({"answer": "dont_save"}));
+        assert_eq!(a.docs.count(), 1);
+        assert!(active_is_blank(&a), "all closed: a blank design");
+    }
+
+    /// #3055: a right-click on a tab opens its menu; Close Other Tabs from it keeps that tab.
+    #[test]
+    fn a_tab_right_clicked_offers_close_others() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.custom_titlebar = true;
+        h.call("ui.resize", json!({"width": 1400, "height": 720}));
+        open_tab(&mut h.app, Session::default()).unwrap();
+        open_tab(&mut h.app, Session::default()).unwrap();
+        assert_eq!(h.app.docs.count(), 3);
+        h.frames(3);
+        h.step(&json!({"click": {"handle": "tab:design:1"}, "button": "right"})).unwrap();
+        h.frames(2);
+        h.step(&json!({"click": {"handle": "tab_menu:ui.closeOtherTabs"}})).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.docs.count(), 1);
+    }
+
     #[test]
     fn tabs_keep_their_own_design() {
         let mut a = app();
@@ -763,10 +915,9 @@ mod tests {
         assert!(active_is_blank(&a) && a.home.open);
     }
 
-    /// The tab strip's + opens a tab every time, an empty design's included; over the start
-    /// page's blank design (a launch) it uses that design.
+    /// Direct tab creation remains available, including reuse of an untouched launch design.
     #[test]
-    fn plus_opens_a_tab_every_time() {
+    fn direct_new_tab_reuses_the_launch_design_then_opens_a_tab_every_time() {
         let mut a = app();
         a.home.open = true;
         new_tab(&mut a);
